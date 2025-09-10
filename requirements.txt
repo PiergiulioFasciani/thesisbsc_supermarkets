@@ -1,0 +1,10 @@
+geopandas>=0.14
+shapely>=2.0
+pyproj>=3.5
+fiona>=1.9
+rtree>=1.2
+pandas>=2.0
+numpy>=1.26
+tqdm>=4.66
+rich>=13.7
+pyosmium>=3.7
