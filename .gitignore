@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# R
+.Rhistory
+.Rproj.user/
+
+# Data / outputs
+data/pbf/*.pbf
+data/quadtree_*/
+*.gpkg
+
+# OS cruft
+.DS_Store
+Thumbs.db
