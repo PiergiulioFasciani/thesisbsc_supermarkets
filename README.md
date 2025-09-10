@@ -67,5 +67,20 @@ After the sampling is carried out, a fullanalysis.r file begins an analysis in t
 
 ### How to make it work?
 
+To make this codebase run on your system do the following:
+
+   - Install the following:
+      - R 4.2 or above;
+      - Python 3.10 or above;
+
+   - On Windows:
+      - Double click run_all.bat;
+         - 
+      - When prompted, search for the latest .csv file in the data folder;
+      - At the end, you can see the .txt file with the models' results;
+        
+   - On Mac/Linux
+      - 
+
  
 
