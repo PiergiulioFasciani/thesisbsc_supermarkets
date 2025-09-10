@@ -1,4 +1,3 @@
-# poi_point2point_distances.py
 # -------------------------------------------------------------------------------------------------
 # Quadtree tiles → ONE CSV (has_poi, has_poc) + features:
 #   • Polygon→point distances (ORIGINAL, unchanged; 0 if facility lies inside the polygon)
@@ -664,3 +663,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
