@@ -1,4 +1,3 @@
-# quadtree_sampler_redistanced.py
 # -------------------------------------------------------------------------------------------------
 # Quadtree tiles with ONE CSV (has_poi, has_poc) + features:
 #   • Distances (meters) per tile:
@@ -561,3 +560,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
