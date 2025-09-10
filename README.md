@@ -12,6 +12,7 @@ This codebase is a sampler+analyzer that uses OSM data from the Italian Northwes
   - Supermarkets;
   - Funeral Services and Graveyards, Points of Control (POCs, not yet implemented);
   - Public Transport (all kinds).
+
 within the Metropolitan City of Milan to answer the following research question:
   - #### How does proximity to a supermarket influence the probability of finding a smaller retail shop that offers a subset of the services a supermarket already offers?
 
