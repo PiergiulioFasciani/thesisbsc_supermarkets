@@ -1,18 +1,21 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM -------- Config (edit here or set as environment variables) --------
-REM Geofabrik: Nord-Ovest extract (Milan region)
+REM -------- Config (edit here or set as env vars) --------
+REM Geofabrik Nord-Ovest (Milan region)
 if "%PBF_URL%"==""   set "PBF_URL=https://download.geofabrik.de/europe/italy/nord-ovest-latest.osm.pbf"
 if "%PBF_PATH%"==""  set "PBF_PATH=data\pbf\nord-ovest-latest.osm.pbf"
 
-REM Area of interest (Duomo-ish center; meters radius)
+REM Area of interest (Duomo-ish)
 if "%CENTER%"==""    set "CENTER=45.4642,9.1914"
 if "%RADIUS_M%"==""  set "RADIUS_M=1500"
 
 REM Output base; Python creates data\quadtree_YYYYMMDD_HHMMSS\
 if "%OUT_DIR%"==""   set "OUT_DIR=data"
-REM --------------------------------------------------------------------
+
+REM Which Python entry? default main.py; set USE_LEGACY=1 to run legacy_main.py
+if "%USE_LEGACY%"=="1" (set "PY_SCRIPT=python\legacy_main.py") else (set "PY_SCRIPT=python\main.py")
+REM -------------------------------------------------------
 
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 if not exist "%~dp0data\pbf" mkdir "%~dp0data\pbf"
@@ -35,7 +38,7 @@ print("Download complete:", dst)
 PY
 )
 
-REM --- Create/use local virtualenv & install Python deps ---
+REM --- Python venv & deps ---
 if not exist .venv (
   py -3 -m venv .venv
 )
@@ -44,7 +47,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 REM --- Run the sampler (writes a timestamped run folder under data\) ---
-python python\poi_point2point_distances.py ^
+python "%PY_SCRIPT%" ^
   --center "%CENTER%" --radius-m %RADIUS_M% ^
   --pbf "%PBF_PATH%" --out-dir "%OUT_DIR%" --min-tile-m 50
 
@@ -65,11 +68,11 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-Rscript R\run_all_proximity_models_single_txt.R
+Rscript R\fullanalysis.r
 
 REM --- Point to the final one-stop report ---
 for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command ^
-  "(Get-ChildItem -Path '%OUT_DIR%\quadtree_*' -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { Get-ChildItem -Path $_.FullName -Directory | Where-Object { $_.Name -like 'model_summaries_*' } } | Select-Object -First 1).FullName"`) do set "LATEST=%i"
+  "(Get-ChildItem -Path '%OUT_DIR%\quadtree_*' -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { Get-ChildItem -Path $_.FullName -Directory | Where-Object { $_.Name -like 'model_summaries_*' } } | Select-Object -First 1).FullName"`) do set "LATEST=%%i"
 if not "%LATEST%"=="" (
   echo Done. See: %LATEST%\proximity_models_all.txt
 ) else (
