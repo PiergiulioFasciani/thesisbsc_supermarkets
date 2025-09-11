@@ -31,18 +31,9 @@ pip install -r requirements.txt
 if [ ! -f "$PBF_PATH" ]; then
   echo "PBF missing — downloading:"
   echo "  $PBF_URL"
-  python - <<'PY'
-import os, ssl, urllib.request
-url = os.environ["PBF_URL"]; dst = os.environ["PBF_PATH"]
-os.makedirs(os.path.dirname(dst), exist_ok=True)
-ctx = ssl.create_default_context()
-with urllib.request.urlopen(url, context=ctx) as r, open(dst, "wb") as f:
-    while True:
-        b = r.read(1<<15)
-        if not b: break
-        f.write(b)
-print("Download complete:", dst)
-PY
+  # Use curl with -L to follow redirects and --create-dirs to make the directory
+  curl -L "$PBF_URL" -o "$PBF_PATH" --create-dirs
+  echo "Download complete: $PBF_PATH"
 fi
 
 # --- Run the sampler (writes a timestamped run folder under data/) ---
