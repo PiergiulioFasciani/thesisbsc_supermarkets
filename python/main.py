@@ -18,7 +18,7 @@
 #   • Counts inside tile (unchanged): n_pois, n_poc + has_poi/has_poc
 #
 # CLI
-#   python poi_point2point_distances.py --center "45.43318,9.18378" --radius-m 1200 [--pbf <path>] [--min-tile-m 50]
+#   python main.py --center "45.43318,9.18378" --radius-m 1200 [--pbf <path>] [--min-tile-m 50]
 #
 # Requirements
 #   pip install pyosmium geopandas shapely pyproj fiona pandas numpy tqdm rich
@@ -663,4 +663,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
