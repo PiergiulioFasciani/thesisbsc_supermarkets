@@ -17,8 +17,9 @@
 #       pt_cnt_200m, pt_cnt_400m, super_cnt_300m, super_cnt_600m
 #   • Counts inside tile (unchanged): n_pois, n_poc + has_poi/has_poc
 #
-# CLI
-#   python main.py --center "45.43318,9.18378" --radius-m 1200 [--pbf <path>] [--min-tile-m 50]
+# CLI (the run_all.sh/.bat launchers pass these)
+#   python python/main.py --center "45.43318,9.18378" --radius-m 1200 \
+#       --pbf data/pbf/nord-ovest-latest.osm.pbf --out-dir data --min-tile-m 50
 #
 # Requirements
 #   pip install pyosmium geopandas shapely pyproj fiona pandas numpy tqdm rich
@@ -87,8 +88,9 @@ MORTUARY_SHOP = {"funeral_directors", "funeral_home"}
 MORTUARY_AMENITY = {"crematorium", "grave_yard"}
 MORTUARY_LANDUSE = {"cemetery"}
 
-DEFAULT_PBF = r"C:/src/osm_project/osm_pbf/map.pbf"
-DEFAULT_OUT_BASE = r"C:/src/osm_project/data"
+# ---- Portable defaults for run_all.sh/.bat (cross-platform) ----
+DEFAULT_PBF = os.path.join("data", "pbf", "nord-ovest-latest.osm.pbf")
+DEFAULT_OUT_BASE = "data"
 
 # Buffer radii (meters) for counts
 PT_BUFFER_LIST = [200, 400]
@@ -644,7 +646,11 @@ def main():
     except Exception as e:
         warn(f"Overlay clip failed ({e}); writing unclipped grid.")
 
-    if os.path.exists(gpkg_path): os.remove(gpkg_path)
+    # Ensure fresh GPKG
+    if os.path.exists(gpkg_path):
+        try: os.remove(gpkg_path)
+        except Exception: pass
+
     grid_gdf.to_file(gpkg_path, layer="quadtree_grid", driver="GPKG")
     (fiona_safe(pois_wgs) if len(pois_wgs) else gpd.GeoDataFrame(pois_wgs, geometry="geometry", crs="EPSG:4326")) \
         .to_file(gpkg_path, layer="pois_target", driver="GPKG")
@@ -663,5 +669,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
