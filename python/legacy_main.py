@@ -11,8 +11,9 @@
 #       - super_cnt_300m, super_cnt_600m
 #   • Counts inside tile: n_pois, n_poc
 #
-# CLI
-#   python quadtree_sampler_redistanced.py --center "45.43318,9.18378" --radius-m 1200 [--pbf <path>] [--min-tile-m 50]
+# CLI (launchers pass these)
+#   python python/legacy_main.py --center "45.43318,9.18378" --radius-m 1200 \
+#       --pbf data/pbf/nord-ovest-latest.osm.pbf --out-dir data --min-tile-m 50
 #
 # Requirements
 #   pip install pyosmium geopandas shapely pyproj fiona pandas numpy tqdm rich
@@ -81,8 +82,9 @@ MORTUARY_SHOP = {"funeral_directors", "funeral_home"}
 MORTUARY_AMENITY = {"crematorium", "grave_yard"}
 MORTUARY_LANDUSE = {"cemetery"}
 
-DEFAULT_PBF = r"C:/src/osm_project/osm_pbf/map.pbf"
-DEFAULT_OUT_BASE = r"C:/src/osm_project/data"
+# ---- Portable defaults for run_all.sh/.bat (cross-platform) ----
+DEFAULT_PBF = os.path.join("data", "pbf", "nord-ovest-latest.osm.pbf")
+DEFAULT_OUT_BASE = "data"
 
 # Buffer radii (meters) for counts
 PT_BUFFER_LIST = [200, 400]
@@ -156,7 +158,7 @@ def prepare_output_dir(base_dir: str):
 # ---------------------------------- NEAREST / COUNTS ----------------------------------
 
 def min_poly_to_points_distance(poly_m, points_gdf_m: gpd.GeoDataFrame, sidx, search_steps=(0, 50, 100, 200, 400, 800, 1600, 3200, 6400)):
-    """ Min distance from tile polygon to any point (meters). 0 if any point lies inside the polygon. """
+    """Min distance from tile polygon to any point (meters). 0 if any point lies inside the polygon."""
     if points_gdf_m is None or len(points_gdf_m) == 0:
         return float("nan")
     cand = list(sidx.query(poly_m, predicate="intersects"))
@@ -173,7 +175,7 @@ def min_poly_to_points_distance(poly_m, points_gdf_m: gpd.GeoDataFrame, sidx, se
     return dmin
 
 def min_point_to_points_distance(pt_m: Point, points_gdf_m: gpd.GeoDataFrame, sidx, search_steps=(50, 100, 200, 400, 800, 1600, 3200, 6400)):
-    """ Min distance from a POINT to nearest target point (meters). """
+    """Min distance from a POINT to nearest target point (meters)."""
     if points_gdf_m is None or len(points_gdf_m) == 0:
         return float("nan")
     for r in search_steps:
@@ -186,7 +188,7 @@ def min_point_to_points_distance(pt_m: Point, points_gdf_m: gpd.GeoDataFrame, si
     return float(min(pt_m.distance(p) for p in pts))
 
 def count_points_within_buffer(poly_m, points_gdf_m: gpd.GeoDataFrame, sidx, radius_m: float) -> int:
-    """ Count points whose distance to the polygon is <= radius_m (polygon.buffer(radius)). """
+    """Count points whose distance to the polygon is <= radius_m (polygon.buffer(radius))."""
     if points_gdf_m is None or len(points_gdf_m) == 0:
         return 0
     buf = poly_m.buffer(radius_m)
@@ -237,8 +239,8 @@ class AOIFilter:
         return self.aoi.covers(Point(lon, lat))
 
 class OSMCollector(osm.SimpleHandler):
-    """ AOI features: POIs, control (mortuary), supermarkets & PT (for GIS);
-        GLOBAL sets: supermarkets + PT (for distances & buffer counts) """
+    """AOI features: POIs, control (mortuary), supermarkets & PT (for GIS);
+       GLOBAL sets: supermarkets + PT (for distances & buffer counts)."""
     def __init__(self, tm: TagMatcher, af: AOIFilter):
         super().__init__()
         self.tm, self.af = tm, af
@@ -261,7 +263,7 @@ class OSMCollector(osm.SimpleHandler):
             self._maybe_keep_aoi(Feature(n.id, lon, lat, name, kind, "node")); return
         if kind == "transport":
             self.pt_global.append(Feature(n.id, lon, lat, name, kind, "node"))
-            self._maybe_keep_aoi(Feature(n.id, lon, lat, name, kind, "node")); return
+            self._maybe_keep_aoi(Feature(n.id, lon, lat, name, "transport", "node")); return
         self._maybe_keep_aoi(Feature(n.id, lon, lat, name, kind, "node"))
 
     def area(self, a):
@@ -283,7 +285,7 @@ class OSMCollector(osm.SimpleHandler):
                 self._maybe_keep_aoi(Feature(a.id, lon, lat, name, kind, "area")); return
             if kind == "transport":
                 self.pt_global.append(Feature(a.id, lon, lat, name, kind, "area"))
-                self._maybe_keep_aoi(Feature(a.id, lon, lat, name, kind, "area")); return
+                self._maybe_keep_aoi(Feature(a.id, lon, lat, name, "transport", "area")); return
             self._maybe_keep_aoi(Feature(a.id, lon, lat, name, kind, "area"))
         except Exception:
             return
@@ -541,7 +543,11 @@ def main():
     except Exception as e:
         warn(f"Overlay clip failed ({e}); writing unclipped grid.")
 
-    if os.path.exists(gpkg_path): os.remove(gpkg_path)
+    # ensure fresh GPKG
+    if os.path.exists(gpkg_path):
+        try: os.remove(gpkg_path)
+        except Exception: pass
+
     grid_gdf.to_file(gpkg_path, layer="quadtree_grid", driver="GPKG")
     (fiona_safe(pois_wgs) if len(pois_wgs) else gpd.GeoDataFrame(pois_wgs, geometry="geometry", crs="EPSG:4326")) \
         .to_file(gpkg_path, layer="pois_target", driver="GPKG")
@@ -560,4 +566,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
