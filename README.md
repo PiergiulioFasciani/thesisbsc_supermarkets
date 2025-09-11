@@ -82,7 +82,7 @@ To make this codebase run on your system do the following:
         
    - On Mac/Linux
       - cd into the codebase's folder
-      - bash run_all.sh
+      - `./run_all.sh`
          - When prompted, search for the latest .csv file in the data folder;
          - At the end, you can see the .txt file with the models' results;
       - The model is agnostic by design, you can choose to modify the AOI in bash (EXAMPLE, USE QGIS TO FETCH COORDINATES):
