@@ -1,5 +1,6 @@
 # ================= run_all_proximity_models_single_txt.R =================
 options(stringsAsFactors = FALSE, scipen = 999, digits = 5)
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
 
 # --- 0) Packages ---
 need <- c("lmtest","sandwich")
@@ -7,9 +8,12 @@ to_install <- need[!sapply(need, requireNamespace, quietly=TRUE)]
 if (length(to_install)) install.packages(to_install)
 library(lmtest); library(sandwich)
 
-# --- 1) Load CSV (friendly picker) ---
-csv_path <- ""  # set a path or leave "" to pick interactively
+# --- 1) Load CSV (from CLI arg or picker) ---
+args <- commandArgs(trailingOnly = TRUE)
+csv_path <- if (length(args) > 0 && nzchar(args[1])) args[1] else ""
+
 if (!nzchar(csv_path)) {
+  message("No CSV path passed via command line, opening interactive picker...")
   csv_path <- tryCatch({
     if (requireNamespace("rstudioapi", quietly=TRUE) && rstudioapi::isAvailable())
       rstudioapi::selectFile("Select quadtree CSV", label="Select")
@@ -18,7 +22,11 @@ if (!nzchar(csv_path)) {
     else file.choose()
   }, error=function(e) "")
 }
-stopifnot(nzchar(csv_path))
+
+if (!nzchar(csv_path) || !file.exists(csv_path)) {
+  stop("Fatal: CSV file not found or specified path is empty. Path: '", csv_path, "'")
+}
+message("Loading CSV: ", csv_path)
 df <- read.csv(csv_path, check.names = TRUE)
 
 # --- 2) Output directory + one summary file ---
