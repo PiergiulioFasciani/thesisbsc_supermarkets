@@ -75,12 +75,19 @@ To make this codebase run on your system do the following:
 
    - On Windows:
       - Double click run_all.bat;
-         - 
-      - When prompted, search for the latest .csv file in the data folder;
-      - At the end, you can see the .txt file with the models' results;
+         - When prompted, search for the latest .csv file in the data folder;
+         - At the end, you can see the .txt file with the models' results;
+      - The model is agnostic by design, you can choose to modify the AOI in Powershell:
+         - $env:CENTER="45.47,9.20"; $env:RADIUS_M=2000; .\run_all.bat          EXAMPLE, USE QGIS TO FETCH COORDINATES
         
    - On Mac/Linux
-      - 
+      - cd into the codebase's folder
+      - bash run_all.sh
+         - When prompted, search for the latest .csv file in the data folder;
+         - At the end, you can see the .txt file with the models' results;
+      - The model is agnostic by design, you can choose to modify the AOI in bash:
+         - CENTER="45.47,9.20" RADIUS_M=2000 bash run_all.sh          EXAMPLE, USE QGIS TO FETCH COORDINATES
+
 
  
 
