@@ -41,21 +41,20 @@ python "$PY_SCRIPT" \
   --center "$CENTER" --radius-m "$RADIUS_M" \
   --pbf "$PBF_PATH" --out-dir "$OUT_DIR" --min-tile-m 50
 
-# --- Hint the newest CSV to pick in R (we do NOT pass it automatically) ---
+# --- Find the newest CSV to pass to R ---
 CSV_HINT="$(ls -1t "$OUT_DIR"/quadtree_*/quadtree_grid.csv 2>/dev/null | head -n1 || true)"
-if [ -n "$CSV_HINT" ]; then
-  echo
-  echo "When the R picker opens, choose this file:"
-  echo "  $CSV_HINT"
-  echo
+if [ -z "$CSV_HINT" ]; then
+  echo "Error: No quadtree_grid.csv file found for the R script to process." >&2
+  exit 1
 fi
 
-# --- Run the models (picker-only by design) ---
+# --- Run the models ---
 if ! command -v Rscript >/dev/null 2>&1; then
   echo "Error: Rscript not found in PATH. Please install R (>= 4.2) and rerun." >&2
   exit 1
 fi
-Rscript R/fullanalysis.r
+echo "Running R analysis on: $CSV_HINT"
+Rscript R/fullanalysis.r "$CSV_HINT"
 
 # --- Point to the final one-stop report ---
 LATEST_REPORT="$(ls -1dt "$OUT_DIR"/quadtree_*/*/ 2>/dev/null | grep model_summaries | head -n1 || true)"
