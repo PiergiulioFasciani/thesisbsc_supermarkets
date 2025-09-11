@@ -7,4 +7,4 @@ pandas>=2.0
 numpy>=1.26
 tqdm>=4.66
 rich>=13.7
-pyosmium>=3.7
+osmium>=3.7
