@@ -74,20 +74,22 @@ To make this codebase run on your system do the following:
       - Python 3.10 or above;
 
    - On Windows:
+      - Ensure you have Python and R added to your PATH (environment variable) and installed pyenv
       - Double click run_all.bat;
-         - When prompted, search for the latest .csv file in the data folder;
          - At the end, you can see the .txt file with the models' results;
       - The model is agnostic by design, you can choose to modify the AOI in Powershell (EXAMPLE, USE QGIS TO FETCH COORDINATES):
          - $env:CENTER="45.47,9.20"; $env:RADIUS_M=2000; .\run_all.bat;          
         
    - On Mac/Linux
       - cd into the codebase's folder
+      - Ensure you have Python, R and pyenv (pip) installed.
       - `./run_all.sh`
-         - When prompted, search for the latest .csv file in the data folder;
          - At the end, you can see the .txt file with the models' results;
       - The model is agnostic by design, you can choose to modify the AOI in bash (EXAMPLE, USE QGIS TO FETCH COORDINATES):
          - CENTER="45.47,9.20" RADIUS_M=2000 bash run_all.sh;          
 
+### Troubleshooting
 
+If the bat file in Windows "crashes", verify you have a personal library set up on your machine (to ensure rw access)
  
 
