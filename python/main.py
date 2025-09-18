@@ -154,9 +154,15 @@ def fiona_safe(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         elif pd.api.types.is_bool_dtype(dt): gdf[col] = gdf[col].astype(np.int8)
     return gdf
 
-def prepare_output_dir(base_dir: str):
+def prepare_output_dir(base_dir: str, radius_m: float):
+    """
+    Create an output directory like:
+      quadtree_YYYYMMDD_HHMMSS_<AOI meters>
+    Example: quadtree_20250918_143918_1200
+    """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(base_dir, f"quadtree_{ts}")
+    radius_tag = f"{int(round(radius_m))}"
+    out_dir = os.path.join(base_dir, f"quadtree_{ts}_{radius_tag}")
     os.makedirs(out_dir, exist_ok=True)
     return out_dir
 
@@ -411,7 +417,7 @@ def main():
         err(f"PBF not found: {pbf_path}")
         raise SystemExit(1)
 
-    out_dir = prepare_output_dir(args.out_dir)
+    out_dir = prepare_output_dir(args.out_dir, args.radius_m)
     info(f"Center: ({center_lat:.6f}, {center_lon:.6f})  Radius: {args.radius_m:.0f} m")
     info(f"PBF   : {pbf_path}")
     info(f"Out   : {out_dir}")
