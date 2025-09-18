@@ -1,21 +1,19 @@
 # -------------------------------------------------------------------------------------------------
-# Quadtree tiles → ONE CSV (has_poi, has_poc) + features:
-#   • Polygon→point distances (ORIGINAL, unchanged; 0 if facility lies inside the polygon)
-#       dist_poly_to_pt_m
-#       dist_poly_to_supermarket_m
-#       dist_poly_to_duomo_m
-#   • Polygon→point distances to nearest facility strictly OUTSIDE the polygon (NEW)
-#       dist_poly_to_pt_outside_m
-#       dist_poly_to_supermarket_outside_m
-#   • POI→facility (point-to-point) distances aggregated within the tile (NEW)
-#       poi2super_min_m, poi2super_med_m, poi2super_mean_m
-#       poi2pt_min_m,    poi2pt_med_m,    poi2pt_mean_m
-#       poi2duomo_min_m, poi2duomo_med_m, poi2duomo_mean_m
-#     Optional (outside-only min for gradient checks):
-#       poi2super_min_outside_m, poi2pt_min_outside_m
-#   • Buffer counts (polygon-based, unchanged):
-#       pt_cnt_200m, pt_cnt_400m, super_cnt_300m, super_cnt_600m
-#   • Counts inside tile (unchanged): n_pois, n_poc + has_poi/has_poc
+# Quadtree tiles → ONE CSV (lean, interpretable headers)
+#
+# Tile-level distances (meters), with 0→outside fallback:
+#   d_pt_m     : tile polygon → nearest public-transport stop distance (m);
+#                if 0 (a stop lies inside the tile), uses nearest OUTSIDE-OF-TILE stop.
+#   d_super_m  : tile polygon → nearest supermarket distance (m);
+#                if 0 (a supermarket lies inside the tile), uses nearest OUTSIDE-OF-TILE supermarket.
+#   d_duomo_m  : tile polygon → Duomo distance (m);
+#                if Duomo lies inside the tile (distance==0), uses tile-centroid → Duomo.
+#
+# Buffer counts (polygon-based; unchanged semantics, compact names):
+#   pt200_cnt, pt400_cnt, super300_cnt, super600_cnt
+#
+# Counts inside tile (unchanged):
+#   n_pois, n_poc + has_poi/has_poc
 #
 # CLI (the run_all.sh/.bat launchers pass these)
 #   python python/main.py --center "45.43318,9.18378" --radius-m 1200 \
@@ -30,6 +28,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -161,7 +160,7 @@ def prepare_output_dir(base_dir: str):
     os.makedirs(out_dir, exist_ok=True)
     return out_dir
 
-# -------------------------- DISTANCES / COUNTS (poly + poi→point) --------------------------
+# -------------------------- DISTANCES / COUNTS (poly only + fallback) --------------------------
 
 def _points_inside_mask(poly_m: Polygon, points_gdf_m: gpd.GeoDataFrame) -> np.ndarray:
     if points_gdf_m is None or len(points_gdf_m) == 0:
@@ -203,29 +202,6 @@ def min_poly_to_nearest_point_outside(poly_m, points_gdf_m, sidx, steps=(50,100,
     if len(pts_out) == 0: return float("nan")
     return float(min(poly_m.distance(p) for p in pts_out))
 
-def nearest_from_point(p: Point, points_gdf_m: gpd.GeoDataFrame, sidx, allow_idx=None,
-                       steps=(50,100,200,400,800,1600,3200,6400)) -> float:
-    """Nearest distance from point p to a set of candidate points (in meters)."""
-    if points_gdf_m is None or len(points_gdf_m) == 0:
-        return float("nan")
-    if sidx is None:
-        return float(min(p.distance(q) for q in points_gdf_m.geometry))
-    allowed = None
-    if allow_idx is not None:
-        allowed = set(int(i) for i in allow_idx)
-    for r in steps:
-        buf = p.buffer(r)
-        cand = list(sidx.query(buf, predicate="intersects"))
-        if not cand: continue
-        if allowed is not None:
-            cand = [i for i in cand if i in allowed]
-            if not cand: continue
-        return float(min(p.distance(points_gdf_m.geometry.iloc[i]) for i in cand))
-    if allowed is not None:
-        if not allowed: return float("nan")
-        return float(min(p.distance(points_gdf_m.geometry.iloc[i]) for i in allowed))
-    return float(min(p.distance(q) for q in points_gdf_m.geometry))
-
 def count_points_within_buffer(poly_m, points_gdf_m: gpd.GeoDataFrame, sidx, radius_m: float) -> int:
     if points_gdf_m is None or len(points_gdf_m) == 0:
         return 0
@@ -235,13 +211,6 @@ def count_points_within_buffer(poly_m, points_gdf_m: gpd.GeoDataFrame, sidx, rad
         return 0
     sub = points_gdf_m.iloc[cand]
     return int(sub.within(gpd.GeoSeries([buf], crs=points_gdf_m.crs).iloc[0]).sum())
-
-def agg_three(vals: List[float]) -> Tuple[float, float, float]:
-    vals = [v for v in vals if math.isfinite(v)]
-    if not vals:
-        return float("nan"), float("nan"), float("nan")
-    a = np.array(vals, dtype=float)
-    return float(np.min(a)), float(np.median(a)), float(np.mean(a))
 
 # ------------------------------------- OSM PARSER -------------------------------------
 
@@ -426,7 +395,7 @@ def build_quadtree(root_square_m: Polygon, poi_points_m: gpd.GeoDataFrame, min_t
 # ---------------------------------------- MAIN ----------------------------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="Quadtree tiles with polygon distances (original + outside) + POI→facility stats + buffers (single CSV)")
+    ap = argparse.ArgumentParser(description="Quadtree tiles with lean CSV (outside fallback for 0 distances)")
     ap.add_argument("--center", required=True, help="lat,lon (e.g. '45.43318,9.18378')")
     ap.add_argument("--radius-m", type=float, required=True)
     ap.add_argument("--pbf", default=DEFAULT_PBF)
@@ -485,14 +454,14 @@ def main():
     # Step 4 — Quadtree
     leaves = build_quadtree(root_square_m, pois_m, min_tile_m=args.min_tile_m)
 
-    # Step 5 — Distances (ORIGINAL + OUTSIDE) & buffer counts & POI→facility stats
-    banner("Step 5 — Distances, buffers, and POI→facility stats")
+    # Step 5 — Distances (outside fallback), buffers, counts
+    banner("Step 5 — Distances, buffers, and counts")
     records, poly_geoms_wgs = [], []
     iterator = enumerate(leaves, start=1)
     if TQDM: iterator = tqdm(iterator, total=len(leaves), desc="Tiles", unit="tile")
 
     # Spatial indexes (GLOBAL)
-    pt_sidx    = pt_global_m.sindex    if len(pt_global_m)    else None
+    pt_sidx    = pt_global_m.sindex     if len(pt_global_m)     else None
     super_sidx = supers_global_m.sindex if len(supers_global_m) else None
 
     # Spatial indexes (AOI) for counts inside tile
@@ -510,12 +479,10 @@ def main():
 
     for i, (poly_m, depth, _) in iterator:
         # counts inside tile
-        pois_in = points_in_poly(poly_m, pois_m, poi_sidx)
-        pocs_in = points_in_poly(poly_m, poc_m,  poc_sidx)
-        n_pois = int(len(pois_in))
-        n_poc  = int(len(pocs_in))
+        n_pois = int(len(points_in_poly(poly_m, pois_m, poi_sidx)))
+        n_poc  = int(len(points_in_poly(poly_m, poc_m,  poc_sidx)))
 
-        # ORIGINAL polygon distances (including inside points → can be 0)
+        # Tile-level polygon distances (can be 0 if facility inside tile)
         if pt_sidx:
             d_pt_any = min_poly_to_nearest_point_any(poly_m, pt_global_m, pt_sidx)
             d_pt_out = min_poly_to_nearest_point_outside(poly_m, pt_global_m, pt_sidx)
@@ -528,117 +495,75 @@ def main():
         else:
             d_super_any = float("nan"); d_super_out = float("nan")
 
-        # Duomo: polygon distance; 0 if Duomo lies inside the tile (unchanged)
-        d_duomo = float(poly_m.distance(duomo_m_point))
+        d_duomo_poly = float(poly_m.distance(duomo_m_point))
 
-        # POI→facility distances (only if there are POIs in the tile)
-        poi2super_min = poi2super_med = poi2super_mean = float("nan")
-        poi2pt_min    = poi2pt_med    = poi2pt_mean    = float("nan")
-        poi2duo_min   = poi2duo_med   = poi2duo_mean   = float("nan")
-        poi2super_min_out = float("nan")
-        poi2pt_min_out    = float("nan")
+        # Fallbacks
+        d_pt_final    = d_pt_out    if (math.isfinite(d_pt_any)    and d_pt_any    == 0.0 and math.isfinite(d_pt_out))    else d_pt_any
+        d_super_final = d_super_out if (math.isfinite(d_super_any) and d_super_any == 0.0 and math.isfinite(d_super_out)) else d_super_any
 
-        if n_pois > 0:
-            # Precompute candidate index sets for "outside" (exclude facilities inside the tile polygon)
-            super_inside_mask = _points_inside_mask(poly_m, supers_global_m) if len(supers_global_m) else np.zeros(0, dtype=bool)
-            pt_inside_mask    = _points_inside_mask(poly_m, pt_global_m)     if len(pt_global_m)     else np.zeros(0, dtype=bool)
-            super_out_idx = np.where(~super_inside_mask)[0] if super_inside_mask.size else None
-            pt_out_idx    = np.where(~pt_inside_mask)[0]    if pt_inside_mask.size    else None
+        if math.isfinite(d_duomo_poly) and d_duomo_poly == 0.0:
+            # Duomo inside tile → use tile-centroid distance
+            minx, miny, maxx, maxy = poly_m.bounds
+            cx, cy = (minx+maxx)/2.0, (miny+maxy)/2.0
+            d_duomo_final = float(Point(cx, cy).distance(duomo_m_point))
+        else:
+            d_duomo_final = d_duomo_poly
 
-            # Distances from each POI point to nearest facility
-            dlist_super, dlist_pt, dlist_duo = [], [], []
-            dlist_super_out, dlist_pt_out = [], []
-
-            for p in pois_in.geometry:
-                if len(supers_global_m):
-                    d_poisu = nearest_from_point(p, supers_global_m, super_sidx, allow_idx=None)
-                    dlist_super.append(d_poisu)
-                    if super_out_idx is not None and len(super_out_idx) > 0:
-                        d_poisu_out = nearest_from_point(p, supers_global_m, super_sidx, allow_idx=super_out_idx)
-                        dlist_super_out.append(d_poisu_out)
-                if len(pt_global_m):
-                    d_poipt = nearest_from_point(p, pt_global_m, pt_sidx, allow_idx=None)
-                    dlist_pt.append(d_poipt)
-                    if pt_out_idx is not None and len(pt_out_idx) > 0:
-                        d_poipt_out = nearest_from_point(p, pt_global_m, pt_sidx, allow_idx=pt_out_idx)
-                        dlist_pt_out.append(d_poipt_out)
-                # Duomo: single point
-                d_du = float(p.distance(duomo_m_point))
-                dlist_duo.append(d_du)
-
-            poi2super_min, poi2super_med, poi2super_mean = agg_three(dlist_super)
-            poi2pt_min,    poi2pt_med,    poi2pt_mean    = agg_three(dlist_pt)
-            poi2duo_min,   poi2duo_med,   poi2duo_mean   = agg_three(dlist_duo)
-            # Outside-only mins (optional diagnostics)
-            if dlist_super_out:
-                poi2super_min_out = float(np.nanmin(dlist_super_out))
-            if dlist_pt_out:
-                poi2pt_min_out = float(np.nanmin(dlist_pt_out))
-
-        # buffer counts (polygon-based, unchanged)
+        # buffer counts (compact names)
         buf_counts = {}
         for r in PT_BUFFER_LIST:
-            buf_counts[f"pt_cnt_{r}m"] = count_points_within_buffer(poly_m, pt_global_m, pt_sidx, r)
+            buf_counts[f"pt{r}_cnt"] = count_points_within_buffer(poly_m, pt_global_m, pt_sidx, r)
         for r in SUPER_BUFFER_LIST:
-            buf_counts[f"super_cnt_{r}m"] = count_points_within_buffer(poly_m, supers_global_m, super_sidx, r)
+            buf_counts[f"super{r}_cnt"] = count_points_within_buffer(poly_m, supers_global_m, super_sidx, r)
 
         # geometry for output (to WGS)
-        poly_wgs = shp_transform(to_wgs, poly_m)
         minx, miny, maxx, maxy = poly_m.bounds
         cx, cy = (minx+maxx)/2.0, (miny+maxy)/2.0
-        center_wgs = shp_transform(to_wgs, Point(cx, cy))
+        center_wgs = shp_transform(Transformer.from_crs(crs_m, 4326, always_xy=True).transform, Point(cx, cy))
+        poly_wgs   = shp_transform(Transformer.from_crs(crs_m, 4326, always_xy=True).transform, poly_m)
         poly_geoms_wgs.append(poly_wgs)
 
         rec = {
             "tile_id": i,
-            "depth": depth,
+            "qt_depth": depth,
             "n_pois": n_pois,
             "has_poi": 1 if n_pois > 0 else 0,
             "n_poc": n_poc,
             "has_poc": 1 if n_poc > 0 else 0,
-            "center_lon": center_wgs.x,
-            "center_lat": center_wgs.y,
-            "tile_side_m": maxx - minx,
-            "tile_area_m2": (maxx - minx) * (maxy - miny),
+            "lon": center_wgs.x,
+            "lat": center_wgs.y,
+            "side_m": maxx - minx,
+            "area_m2": (maxx - minx) * (maxy - miny),
 
-            # ORIGINAL polygon distances (unchanged semantics)
-            "dist_poly_to_pt_m": d_pt_any,
-            "dist_poly_to_supermarket_m": d_super_any,
-            "dist_poly_to_duomo_m": d_duomo,
-
-            # NEW: outside-only polygon distances
-            "dist_poly_to_pt_outside_m": d_pt_out,
-            "dist_poly_to_supermarket_outside_m": d_super_out,
-
-            # NEW: POI→facility aggregates
-            "poi2super_min_m": poi2super_min,
-            "poi2super_med_m": poi2super_med,
-            "poi2super_mean_m": poi2super_mean,
-
-            "poi2pt_min_m": poi2pt_min,
-            "poi2pt_med_m": poi2pt_med,
-            "poi2pt_mean_m": poi2pt_mean,
-
-            "poi2duomo_min_m": poi2duo_min,
-            "poi2duomo_med_m": poi2duo_med,
-            "poi2duomo_mean_m": poi2duo_mean,
-
-            # Optional diagnostics: outside-only minima
-            "poi2super_min_outside_m": poi2super_min_out,
-            "poi2pt_min_outside_m": poi2pt_min_out,
+            # Lean tile-level distances with outside fallback
+            "d_pt_m": d_pt_final,
+            "d_super_m": d_super_final,
+            "d_duomo_m": d_duomo_final,
         }
         rec.update(buf_counts)
         records.append(rec)
 
-    # Step 6 — Write files
+    # Step 6 — Write files (CSV + GPKG)
     banner("Step 6 — Writing files")
-    csv_grid  = os.path.join(out_dir, "quadtree_grid.csv")
+    csv_grid  = os.path.join(out_dir, "quadtree_grid.csv")   # same name, lean columns
     gpkg_path = os.path.join(out_dir, "quadtree_layers.gpkg")
 
-    pd.DataFrame.from_records(records).to_csv(csv_grid, index=False, encoding="utf-8")
+    # CSV with a short commented preamble explaining distance semantics
+    df_out = pd.DataFrame.from_records(records)
+    preamble = [
+        "# Column guide:\n",
+        "# d_super_m : tile→nearest supermarket (m); if 0, uses nearest outside-of-tile supermarket.\n",
+        "# d_pt_m    : tile→nearest public-transport stop (m); if 0, uses nearest outside-of-tile stop.\n",
+        "# d_duomo_m : tile→Duomo (m); if Duomo inside the tile, uses tile-centroid→Duomo.\n",
+        "# pt200_cnt/pt400_cnt, super300_cnt/super600_cnt : counts of facilities within the given radius from the tile polygon.\n",
+        "\n"
+    ]
+    with open(csv_grid, "w", encoding="utf-8", newline="") as f:
+        f.writelines(preamble)
+        df_out.to_csv(f, index=False, encoding="utf-8")
     success(f"CSV written: {csv_grid}")
 
-    # GPKG (for GIS visualization)
+    # GPKG (for GIS visualization) — unchanged layers
     grid_gdf = gpd.GeoDataFrame(records, geometry=poly_geoms_wgs, crs="EPSG:4326")
     try:
         aoi_gdf = gpd.GeoDataFrame(geometry=[aoi_poly], crs="EPSG:4326")
@@ -668,4 +593,12 @@ def main():
     banner("All done")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Ensure clean return to the calling shell (no lingering state)
+        try:
+            sys.stdout.flush(); sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(0)
