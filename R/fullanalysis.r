@@ -1,19 +1,31 @@
-# ================= run_all_proximity_models_single_txt.R =================
+# ================= fullanalysis.R (with CR2) =================
 options(stringsAsFactors = FALSE, scipen = 999, digits = 5)
-options(repos = c(CRAN = "https://cran.rstudio.com/"))
 
-# --- 0) Packages ---
-need <- c("lmtest","sandwich")
-to_install <- need[!sapply(need, requireNamespace, quietly=TRUE)]
-if (length(to_install)) install.packages(to_install)
-library(lmtest); library(sandwich)
+# --- 0) Packages (auto-install if missing) ---
+need <- c("lmtest","sandwich","margins","marginaleffects","MASS",
+          "modelsummary","kableExtra","broom","clubSandwich")
+inst <- need[!sapply(need, requireNamespace, quietly=TRUE)]
+if (length(inst)) install.packages(inst, repos = "https://cloud.r-project.org")
 
-# --- 1) Load CSV (from CLI arg or picker) ---
-args <- commandArgs(trailingOnly = TRUE)
-csv_path <- if (length(args) > 0 && nzchar(args[1])) args[1] else ""
+suppressPackageStartupMessages({
+  library(lmtest)
+  library(sandwich)
+  library(MASS)            # mvrnorm
+  library(modelsummary)    # LaTeX tables
+  library(kableExtra)      # LaTeX for data frames
+  library(broom)           # glance/tidy
+  # margins & marginaleffects used lazily
+  # clubSandwich loaded as needed
+})
 
+# --- 0b) Modelsummary render options ---
+options(modelsummary_factory_latex = "kableExtra")
+options(modelsummary_format_numeric_latex = "plain")
+options(modelsummary_get = "broom")   # ensure valid atomic scalar
+
+# --- 1) Load CSV (ignore '#' preamble lines) ---
+csv_path <- ""  # leave "" to pick interactively
 if (!nzchar(csv_path)) {
-  message("No CSV path passed via command line, opening interactive picker...")
   csv_path <- tryCatch({
     if (requireNamespace("rstudioapi", quietly=TRUE) && rstudioapi::isAvailable())
       rstudioapi::selectFile("Select quadtree CSV", label="Select")
@@ -22,224 +34,505 @@ if (!nzchar(csv_path)) {
     else file.choose()
   }, error=function(e) "")
 }
+stopifnot(nzchar(csv_path))
+df <- read.csv(csv_path, check.names = TRUE, comment.char = "#")
 
-if (!nzchar(csv_path) || !file.exists(csv_path)) {
-  stop("Fatal: CSV file not found or specified path is empty. Path: '", csv_path, "'")
-}
-message("Loading CSV: ", csv_path)
-df <- read.csv(csv_path, check.names = TRUE)
-
-# --- 2) Output directory + one summary file ---
+# --- 2) Output (single TXT) ---
 out_dir <- file.path(dirname(csv_path),
                      paste0("model_summaries_", format(Sys.time(), "%Y%m%d_%H%M%S")))
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 out_file <- file.path(out_dir, "proximity_models_all.txt")
 con <- file(out_file, open = "wt", encoding = "UTF-8")
-on.exit(close(con), add = TRUE)
+on.exit({ try(flush(con), silent=TRUE); try(close(con), silent=TRUE) }, add = TRUE)
+.flush <- function(){ try(flush(con), silent=TRUE); try(flush.console(), silent=TRUE) }
 
-# --- Helpers to write to CLI + single file ---
+# --- Helpers (echo + write) ---
 say <- function(...) { msg <- paste(..., collapse=""); cat(msg, "\n"); writeLines(msg, con) }
 dump_obj <- function(obj, header=NULL) {
   if (!is.null(header)) { say(""); say(header) }
   cap <- capture.output(print(obj))
+  if (!length(cap)) cap <- "—"
   cat(paste(cap, collapse="\n"), "\n")
   writeLines(cap, con)
+  .flush()
 }
-qfun <- function(x) as.numeric(quantile(x[is.finite(x)], c(.25,.50,.75), na.rm=TRUE))
-
-# --- 3) Small utilities & distance sources ---
-has <- function(...) any(c(...) %in% names(df))
-v <- function(x) if (x %in% names(df)) df[[x]] else rep(NA_real_, nrow(df))
 coalesce_vec <- function(...) { xs <- list(...); out <- xs[[1]]
 if (length(xs) > 1) for (i in 2:length(xs)) out <- ifelse(is.finite(out), out, xs[[i]]); out }
 
-# Polygon distances with “outside” fallback WHEN original==0
-poly_super <- coalesce_vec(
-  ifelse(is.finite(v("dist_poly_to_supermarket_m")) & v("dist_poly_to_supermarket_m")==0 &
-           is.finite(v("dist_poly_to_supermarket_outside_m")),
-         v("dist_poly_to_supermarket_outside_m"),
-         v("dist_poly_to_supermarket_m"))
-)
-poly_pt    <- coalesce_vec(
-  ifelse(is.finite(v("dist_poly_to_pt_m")) & v("dist_poly_to_pt_m")==0 &
-           is.finite(v("dist_poly_to_pt_outside_m")),
-         v("dist_poly_to_pt_outside_m"),
-         v("dist_poly_to_pt_m"))
-)
-poly_duomo <- v("dist_poly_to_duomo_m")
+# --- 3) Map columns (supports lean & legacy headers) ---
+pick <- function(cands, required=FALSE, default=NA_real_) {
+  hit <- cands[cands %in% names(df)][1]
+  if (!is.na(hit)) return(df[[hit]])
+  if (required) stop(sprintf("Missing required column(s): %s", paste(cands, collapse=", ")), call.=FALSE)
+  rep(default, nrow(df))
+}
 
-# Row-wise: prefer POI→facility, else polygon (above)
-super_raw <- if (has("poi2super_min_m")) coalesce_vec(v("poi2super_min_m"), poly_super) else poly_super
-pt_raw    <- if (has("poi2pt_min_m"))    coalesce_vec(v("poi2pt_min_m"),    poly_pt)    else poly_pt
-duomo_raw <- if (has("poi2duomo_min_m")) coalesce_vec(v("poi2duomo_min_m"), poly_duomo) else poly_duomo
-
-# Controls if present
-cnt_300  <- if (has("super_cnt_300m")) v("super_cnt_300m") else NULL
-cnt_600  <- if (has("super_cnt_600m")) v("super_cnt_600m") else NULL
-log_area <- if (has("tile_area_m2"))   log(pmax(v("tile_area_m2"), 1))    else NULL
-
-# Must-haves
-stopifnot(all(c("has_poi","center_lon","center_lat") %in% names(df)))
+lon <- pick(c("lon","center_lon"), required=TRUE)
+lat <- pick(c("lat","center_lat"), required=TRUE)
+if (!("has_poi" %in% names(df))) stop("Missing required column: has_poi", call.=FALSE)
 df$has_poi <- as.integer(df$has_poi)
 
-# --- 4) Features for LOG specs (uniform logs) ---
-df$lsuper <- log1p(pmax(super_raw, 0))
-df$lpt    <- log1p(pmax(pt_raw,    0))
-df$lduomo <- log1p(pmax(duomo_raw, 0))
-if (!is.null(cnt_300)) df$lcnt0_300   <- log1p(pmax(cnt_300,  0))
-if (!is.null(cnt_600)) df$lcnt300_600 <- log1p(pmax(cnt_600,  0))
-if (!is.null(log_area)) df$log_area   <- log_area
+d_super_m <- if ("d_super_m" %in% names(df)) df$d_super_m else {
+  any_ <- pick("dist_poly_to_supermarket_m")
+  out_ <- pick("dist_poly_to_supermarket_outside_m")
+  coalesce_vec(ifelse(is.finite(any_) & any_==0 & is.finite(out_), out_, any_))
+}
+d_pt_m <- if ("d_pt_m" %in% names(df)) df$d_pt_m else {
+  any_ <- pick("dist_poly_to_pt_m")
+  out_ <- pick("dist_poly_to_pt_outside_m")
+  coalesce_vec(ifelse(is.finite(any_) & any_==0 & is.finite(out_), out_, any_))
+}
+d_duomo_m <- if ("d_duomo_m" %in% names(df)) df$d_duomo_m else pick("dist_poly_to_duomo_m", TRUE)
 
-# --- 5) Build datasets for three specs ---
-# FULL_LOG needs lpt + lsuper + lduomo (+ optional controls)
-keep_full <- Reduce(`&`, lapply(
-  c("has_poi","lsuper","lpt","lduomo",
-    intersect(c("lcnt0_300","lcnt300_600","log_area"), names(df))),
-  function(nm) is.finite(df[[nm]])
-))
+area_m2      <- pick(c("area_m2","tile_area_m2"))
+super300_cnt <- if ("super300_cnt" %in% names(df)) df$super300_cnt else pick("super_cnt_300m")
+super600_cnt <- if ("super600_cnt" %in% names(df)) df$super600_cnt else pick("super_cnt_600m")
+pt200_cnt    <- if ("pt200_cnt"    %in% names(df)) df$pt200_cnt    else pick("pt_cnt_200m")
+pt400_cnt    <- if ("pt400_cnt"    %in% names(df)) df$pt400_cnt    else pick("pt_cnt_400m")
+
+df$lon <- lon; df$lat <- lat
+df$d_super_m <- d_super_m; df$d_pt_m <- d_pt_m; df$d_duomo_m <- d_duomo_m
+df$area_m2 <- area_m2
+df$super300_cnt <- super300_cnt; df$super600_cnt <- super600_cnt
+df$pt200_cnt <- pt200_cnt; df$pt400_cnt <- pt400_cnt
+
+# --- 4) Transforms: log1p + centering (for squares/interactions) ---
+df$lsuper <- log1p(pmax(df$d_super_m, 0))
+df$lpt    <- log1p(pmax(df$d_pt_m,    0))
+df$lduomo <- log1p(pmax(df$d_duomo_m, 0))
+
+m_lsuper <- mean(df$lsuper[is.finite(df$lsuper)], na.rm=TRUE)
+m_lpt    <- mean(df$lpt   [is.finite(df$lpt)],    na.rm=TRUE)
+m_lduomo <- mean(df$lduomo[is.finite(df$lduomo)], na.rm=TRUE)
+
+df$c_lsuper <- df$lsuper - m_lsuper
+df$c_lpt    <- df$lpt    - m_lpt
+df$c_lduomo <- df$lduomo - m_lduomo
+
+# Optional log-controls
+if (any(is.finite(df$super300_cnt))) df$l_super300 <- log1p(pmax(df$super300_cnt,0))
+if (any(is.finite(df$super600_cnt))) df$l_super600 <- log1p(pmax(df$super600_cnt,0))
+if (any(is.finite(df$pt200_cnt   ))) df$l_pt200    <- log1p(pmax(df$pt200_cnt,0))
+if (any(is.finite(df$pt400_cnt   ))) df$l_pt400    <- log1p(pmax(df$pt400_cnt,0))
+if (any(is.finite(df$area_m2     ))) df$log_area   <- log(pmax(df$area_m2, 1))
+
+# --- 5) Datasets (FULL/MIN) ---
+full_base <- c("has_poi","c_lsuper","c_lpt","c_lduomo","lon","lat")
+full_ctrl <- intersect(c("l_super300","l_super600","l_pt200","l_pt400","log_area"), names(df))
+keep_full <- Reduce(`&`, lapply(c(full_base, full_ctrl), function(nm) is.finite(df[[nm]])))
 df_full <- df[keep_full, , drop=FALSE]
 
-# MIN_LOG needs only lsuper + lduomo
-keep_min <- Reduce(`&`, lapply(c("has_poi","lsuper","lduomo"),
-                               function(nm) is.finite(df[[nm]])))
+min_base <- c("has_poi","c_lsuper","c_lduomo","lon","lat")
+keep_min <- Reduce(`&`, lapply(min_base, function(nm) is.finite(df[[nm]])))
 df_min <- df[keep_min, , drop=FALSE]
 
-# SIMPLE_POLY_LINEAR uses polygon-only linear distances (per 100m / km)
-df_simple <- data.frame(
-  has_poi = df$has_poi,
-  center_lon = df$center_lon,
-  center_lat = df$center_lat,
-  dist_pt_100m    = poly_pt    / 100,
-  dist_super_100m = poly_super / 100,
-  dist_duomo_km   = poly_duomo / 1000
-)
-keep_simple <- Reduce(`&`, lapply(df_simple, is.finite))
-df_simple <- df_simple[keep_simple, , drop=FALSE]
-
 # --- 6) Clusters (~1 km) ---
-clust_full <- with(df_full, interaction(
-  floor((center_lon - min(center_lon, na.rm=TRUE))/0.012),
-  floor((center_lat - min(center_lat, na.rm=TRUE))/0.009), drop=TRUE))
-clust_min <- with(df_min, interaction(
-  floor((center_lon - min(center_lon, na.rm=TRUE))/0.012),
-  floor((center_lat - min(center_lat, na.rm=TRUE))/0.009), drop=TRUE))
-clust_simple <- with(df_simple, interaction(
-  floor((center_lon - min(center_lon, na.rm=TRUE))/0.012),
-  floor((center_lat - min(center_lat, na.rm=TRUE))/0.009), drop=TRUE))
+mk_cluster <- function(d) interaction(
+  floor((d$lon - min(d$lon, na.rm=TRUE))/0.012),
+  floor((d$lat - min(d$lat, na.rm=TRUE))/0.009), drop=TRUE)
+clust_full <- if (nrow(df_full)) mk_cluster(df_full) else factor()
+clust_min  <- if (nrow(df_min )) mk_cluster(df_min ) else factor()
 
-# --- 7) Formulas ---
-rhs_full <- "lpt + lsuper*lduomo + I(lsuper^2) + I(lduomo^2)"
-if ("lcnt0_300"   %in% names(df_full)) rhs_full <- paste(rhs_full, "+ lcnt0_300")
-if ("lcnt300_600" %in% names(df_full)) rhs_full <- paste(rhs_full, "+ lcnt300_600")
-if ("log_area"    %in% names(df_full)) rhs_full <- paste(rhs_full, "+ log_area")
+# --- 7) Formulas (CENTERED in squares & interactions) ---
+rhs_full <- paste(
+  "c_lpt + c_lsuper + c_lduomo",
+  " + I(c_lsuper^2) + I(c_lduomo^2)",
+  " + c_lsuper:c_lduomo"
+)
+if ("l_super300" %in% names(df_full)) rhs_full <- paste(rhs_full, "+ l_super300")
+if ("l_super600" %in% names(df_full)) rhs_full <- paste(rhs_full, "+ l_super600")
+if ("l_pt200"    %in% names(df_full)) rhs_full <- paste(rhs_full,    "+ l_pt200")
+if ("l_pt400"    %in% names(df_full)) rhs_full <- paste(rhs_full,    "+ l_pt400")
+if ("log_area"   %in% names(df_full)) rhs_full <- paste(rhs_full,    "+ log_area")
 
-rhs_min <- "lsuper*lduomo"  # minimal spec
+rhs_min <- "c_lsuper + c_lduomo + I(c_lsuper^2) + I(c_lduomo^2) + c_lsuper:c_lduomo"
+
 form_lpm_full   <- as.formula(paste0("has_poi ~ ", rhs_full))
 form_logit_full <- as.formula(paste0("has_poi ~ ", rhs_full))
 form_lpm_min    <- as.formula(paste0("has_poi ~ ", rhs_min))
 form_logit_min  <- as.formula(paste0("has_poi ~ ", rhs_min))
 
-form_simple <- has_poi ~ dist_pt_100m + dist_super_100m*dist_duomo_km +
-  I(dist_super_100m^2) + I(dist_duomo_km^2)
+# --- 8) Fit (guarded) ---
+fit_or_note <- function(expr) tryCatch(eval(expr), error=function(e) structure(list(.error_=e$message), class="fit_error"))
+is_err <- function(x) inherits(x, "fit_error")
+lpm_full     <- if (nrow(df_full) >= 10) fit_or_note(quote(lm(form_lpm_full,   data=df_full))) else structure(list(.error_="Too few rows"), class="fit_error")
+logit_full   <- if (nrow(df_full) >= 10) fit_or_note(quote(glm(form_logit_full, data=df_full, family=binomial("logit")))) else structure(list(.error_="Too few rows"), class="fit_error")
+lpm_min      <- if (nrow(df_min ) >= 10) fit_or_note(quote(lm(form_lpm_min,    data=df_min ))) else structure(list(.error_="Too few rows"), class="fit_error")
+logit_min    <- if (nrow(df_min ) >= 10) fit_or_note(quote(glm(form_logit_min,  data=df_min,  family=binomial("logit")))) else structure(list(.error_="Too few rows"), class="fit_error")
 
-# --- 8) Fit models ---
-lpm_full     <- lm(form_lpm_full, data=df_full)
-logit_full   <- glm(form_logit_full, data=df_full, family=binomial("logit"))
-lpm_min      <- lm(form_lpm_min, data=df_min)
-logit_min    <- glm(form_logit_min, data=df_min, family=binomial("logit"))
-lpm_simple   <- lm(form_simple, data=df_simple)
-logit_simple <- glm(form_simple, data=df_simple, family=binomial("logit"))
+# --- 9) Robust vcov helpers (HC1, cluster HC1, CR2) ---
+hc1    <- function(m) vcovHC(m, type="HC1")
+cl_vc  <- function(m, cl) vcovCL(m, cluster=cl, type="HC1")
+cr2_vc <- function(m, cl) {
+  out <- tryCatch(clubSandwich::vcovCR(m, cluster = cl, type = "CR2"), error=function(e) NULL)
+  if (is.null(out)) vcov(m) else out
+}
 
-# --- 9) Robust and cluster-robust tables ---
-hc1   <- function(m) vcovHC(m, type="HC1")
-cl_vc <- function(m, cl) vcovCL(m, cluster=cl, type="HC1")
+# --- 10) Goodness-of-fit helpers ---
+gof_lm <- function(m) {
+  tryCatch({
+    s <- summary(m); p <- pmin(pmax(as.numeric(fitted(m)), 0), 1)
+    data.frame(
+      nobs = length(residuals(m)),
+      r2 = unname(s$r.squared), adj_r2 = unname(s$adj.r.squared),
+      rmse = sqrt(mean(residuals(m)^2)),
+      brier = mean((model.response(model.frame(m)) - p)^2),
+      aic = AIC(m), bic = BIC(m), row.names = NULL
+    )
+  }, error=function(e) paste("GOF failed:", e$message))
+}
+gof_logit <- function(m) {
+  tryCatch({
+    y <- model.response(model.frame(m)); p <- as.numeric(fitted(m))
+    ll  <- as.numeric(logLik(m)); ll0 <- as.numeric(logLik(update(m, . ~ 1)))
+    data.frame(
+      nobs=length(y), logLik=ll, logLik_null=ll0,
+      mcfadden_r2 = 1 - (ll/ll0),
+      tjur_r2 = mean(p[y==1], na.rm=TRUE) - mean(p[y==0], na.rm=TRUE),
+      brier = mean((y - p)^2, na.rm=TRUE),
+      aic=AIC(m), bic=BIC(m), row.names=NULL
+    )
+  }, error=function(e) paste("GOF failed:", e$message))
+}
 
-# FULL_LOG
-lpm_full_hc1   <- coeftest(lpm_full,   vcov = hc1(lpm_full))
-lpm_full_cl    <- coeftest(lpm_full,   vcov = cl_vc(lpm_full,   clust_full))
-logit_full_hc1 <- coeftest(logit_full, vcov = hc1(logit_full))
-logit_full_cl  <- coeftest(logit_full, vcov = cl_vc(logit_full, clust_full))
+# --- 11) AMEs (prefer marginaleffects, else margins, else bootstrap) ---
+format_me <- function(df_me, engine_note) {
+  if (is.null(df_me)) return(data.frame(Note=paste("AME failed in", engine_note)))
+  nm <- names(df_me)
+  if (all(c("term","estimate") %in% nm)) {
+    return(data.frame(
+      factor   = df_me$term,
+      AME      = df_me$estimate,
+      SE       = df_me$std.error,
+      z        = df_me$statistic,
+      p        = df_me$p.value,
+      lower    = df_me$conf.low,
+      upper    = df_me$conf.high,
+      Engine   = engine_note,
+      row.names = NULL
+    ))
+  }
+  if (all(c("factor","AME") %in% nm)) { df_me$Engine <- engine_note; return(df_me) }
+  df_me
+}
+safe_vcov <- function(m, type=c("HC1","cluster","CR2"), cluster=NULL) {
+  type <- match.arg(type)
+  out <- tryCatch(
+    switch(type,
+           "HC1"     = vcovHC(m, type="HC1"),
+           "cluster" = vcovCL(m, cluster=cluster, type="HC1"),
+           "CR2"     = cr2_vc(m, cluster)
+    ),
+    error=function(e) NULL
+  )
+  if (!is.null(out)) return(out)
+  vcov(m)
+}
 
-# MIN_LOG
-lpm_min_hc1    <- coeftest(lpm_min,    vcov = hc1(lpm_min))
-lpm_min_cl     <- coeftest(lpm_min,    vcov = cl_vc(lpm_min,    clust_min))
-logit_min_hc1  <- coeftest(logit_min,  vcov = hc1(logit_min))
-logit_min_cl   <- coeftest(logit_min,  vcov = cl_vc(logit_min,  clust_min))
+# --- Bootstrap AME helpers (unchanged) ---
+ame_param_boot_reg <- function(glmmod, reg_names, vcov_mat, B=300L, label="parametric bootstrap") {
+  set.seed(123L)
+  X  <- model.matrix(glmmod); bh <- coef(glmmod); nm <- names(bh)
+  make_pd <- function(S){ S <- (S+t(S))/2; ev <- eigen(S, symmetric=TRUE); ev$values[ev$values<1e-10] <- 1e-10; S2 <- ev$vectors %*% diag(ev$values) %*% t(ev$vectors); (S2+t(S2))/2 }
+  Sigma <- make_pd(vcov_mat)
+  logistic <- function(x) 1/(1+exp(-x))
+  ame_once <- function(beta){
+    eta <- as.numeric(X %*% beta); dPdEta <- logistic(eta) * (1 - logistic(eta))
+    sapply(reg_names, function(rn){ bj <- if (rn %in% names(beta)) beta[[rn]] else 0; mean(dPdEta * bj, na.rm=TRUE) })
+  }
+  betas <- MASS::mvrnorm(n=B, mu=bh, Sigma=Sigma)
+  draws <- t(apply(betas, 1, function(b){ names(b) <- nm; ame_once(b) }))
+  est <- colMeans(draws, na.rm=TRUE); se <- apply(draws, 2, sd, na.rm=TRUE)
+  z <- est/se; pval <- 2*pnorm(-abs(z)); ci_l <- est - 1.96*se; ci_u <- est + 1.96*se
+  data.frame(factor=reg_names, AME=est, SE=se, z=z, p=pval, lower=ci_l, upper=ci_u,
+             Engine=paste0(label, ", B=", B), row.names = NULL)
+}
+ame_param_boot_base <- function(glmmod, base_vars, vcov_mat, B=300L, label="parametric bootstrap") {
+  set.seed(123L)
+  X  <- model.matrix(glmmod); nm <- colnames(X); bh <- coef(glmmod)
+  make_pd <- function(S){ S <- (S+t(S))/2; ev <- eigen(S, symmetric=TRUE); ev$values[ev$values<1e-10] <- 1e-10; S2 <- ev$vectors %*% diag(ev$values) %*% t(ev$vectors); (S2+t(S2))/2 }
+  Sigma <- make_pd(vcov_mat)
+  logistic <- function(x) 1/(1+exp(-x))
+  ame_once <- function(beta){
+    eta <- as.numeric(X %*% beta); p <- logistic(eta); dPdEta <- p*(1-p)
+    out <- numeric(length(base_vars)); names(out) <- base_vars
+    for (v in base_vars) {
+      dEta <- if (v %in% names(beta)) beta[[v]] else 0
+      hits <- grep(paste0("(^|:)", v, "(:|$)"), names(beta), value=TRUE)
+      for (h in hits) if (h != v) {
+        parts <- strsplit(h, ":", fixed=TRUE)[[1]]
+        others <- parts[parts != v]
+        if (length(others) && all(others %in% colnames(X)))
+          dEta <- dEta + beta[[h]] * Reduce(`*`, lapply(others, function(o) X[, o, drop=TRUE]))
+      }
+      qn <- paste0("I(", v, "^2)")
+      if (qn %in% names(beta) && v %in% colnames(X))
+        dEta <- dEta + 2 * beta[[qn]] * X[, v, drop=TRUE]
+      out[v] <- mean(dPdEta * dEta, na.rm=TRUE)
+    }
+    out
+  }
+  betas <- MASS::mvrnorm(n=B, mu=bh, Sigma=Sigma)
+  draws <- t(apply(betas, 1, function(b){ names(b) <- names(bh); ame_once(b) }))
+  est <- colMeans(draws, na.rm=TRUE); se <- apply(draws, 2, sd, na.rm=TRUE)
+  z <- est/se; pval <- 2*pnorm(-abs(z)); ci_l <- est - 1.96*se; ci_u <- est + 1.96*se
+  data.frame(factor=base_vars, AME=est, SE=se, z=z, p=pval, lower=ci_l, upper=ci_u,
+             Engine=paste0(label, ", B=", B), row.names = NULL)
+}
+ame_all <- function(glmmod, clust=NULL, B=300L) {
+  if (inherits(glmmod, "fit_error")) return(list(Regressors=data.frame(Note="Not fitted"), Base=data.frame(Note="—"), Cluster=NULL))
+  X <- model.matrix(glmmod)
+  reg_names  <- setdiff(colnames(X), "(Intercept)")
+  base_vars  <- unique(gsub("^I\\((.+)\\^2\\)$","\\1", reg_names))
+  base_vars  <- base_vars[base_vars %in% colnames(X)]
+  
+  me_reg <- NULL; me_reg_cl <- NULL
+  if (requireNamespace("marginaleffects", quietly=TRUE)) {
+    me_reg <- tryCatch(format_me(summary(marginaleffects::avg_slopes(glmmod, vcov="HC1")), "marginaleffects (HC1)"),
+                       error=function(e) NULL)
+    if (!is.null(clust) && length(unique(clust))>1) {
+      me_reg_cl <- tryCatch(format_me(summary(marginaleffects::avg_slopes(
+        glmmod, vcov=sandwich::vcovCL, vcov.args=list(cluster=clust, type="HC1"))),
+        "marginaleffects (cluster HC1)"),
+        error=function(e) data.frame(Note=paste("marginaleffects cluster failed:", e$message)))
+    } else me_reg_cl <- data.frame(Note="AME cluster skipped (need ≥2 clusters)")
+  }
+  if ((is.null(me_reg) || !"SE" %in% names(me_reg)) && requireNamespace("margins", quietly=TRUE)) {
+    me_reg <- tryCatch(format_me(summary(margins::margins(glmmod, vce="robust")), "margins (HC1)"),
+                       error=function(e) NULL)
+    if (!is.null(clust) && length(unique(clust))>1) {
+      me_reg_cl <- tryCatch(format_me(summary(margins::margins(glmmod, vce="cluster", cluster=clust)), "margins (cluster)"),
+                            error=function(e) data.frame(Note=paste("margins cluster failed:", e$message)))
+    } else if (is.null(me_reg_cl)) me_reg_cl <- data.frame(Note="AME cluster skipped (need ≥2 clusters)")
+  }
+  if (is.null(me_reg) || !"SE" %in% names(me_reg)) {
+    Vh <- safe_vcov(glmmod, "HC1"); me_reg <- ame_param_boot_reg(glmmod, reg_names, Vh, B, "parametric bootstrap (HC1)")
+    if (!is.null(clust) && length(unique(clust))>1) {
+      Vc <- safe_vcov(glmmod, "cluster", cluster=clust)
+      me_reg_cl <- ame_param_boot_reg(glmmod, reg_names, Vc, B, "parametric bootstrap (cluster HC1)")
+    } else me_reg_cl <- data.frame(Note="AME cluster skipped (need ≥2 clusters)")
+  }
+  Vh2 <- safe_vcov(glmmod, "HC1")
+  me_base <- ame_param_boot_base(glmmod,
+                                 base_vars = intersect(base_vars, c("c_lpt","c_lsuper","c_lduomo")),
+                                 vcov_mat=Vh2, B=B,
+                                 label="parametric bootstrap (HC1)")
+  list(Regressors = me_reg, Base = me_base, Cluster = me_reg_cl)
+}
 
-# SIMPLE_POLY_LINEAR
-lpm_simple_hc1   <- coeftest(lpm_simple,   vcov = hc1(lpm_simple))
-lpm_simple_cl    <- coeftest(lpm_simple,   vcov = cl_vc(lpm_simple,   clust_simple))
-logit_simple_hc1 <- coeftest(logit_simple, vcov = hc1(logit_simple))
-logit_simple_cl  <- coeftest(logit_simple, vcov = cl_vc(logit_simple, clust_simple))
+# --- 12) IC tables ---
+ic_table <- function(nms, ic) {
+  d <- ic - min(ic, na.rm=TRUE); w <- exp(-0.5*d); w <- w / sum(w, na.rm=TRUE)
+  data.frame(model=nms, IC=round(ic,3), delta=round(d,3), weight=round(w,3))[order(d),]
+}
+safe_ic <- function(m, fun) if (is_err(m)) NA_real_ else suppressWarnings(fun(m))
 
-# --- 10) Predicted probabilities (grids) ---
-# FULL_LOG: quartiles of lpt, lsuper, lduomo
-grid_full <- expand.grid(
-  lpt    = qfun(df_full$lpt),
-  lsuper = qfun(df_full$lsuper),
-  lduomo = qfun(df_full$lduomo)
-)
-if ("lcnt0_300"   %in% names(df_full)) grid_full$lcnt0_300   <- mean(df_full$lcnt0_300,   na.rm=TRUE)
-if ("lcnt300_600" %in% names(df_full)) grid_full$lcnt300_600 <- mean(df_full$lcnt300_600, na.rm=TRUE)
-if ("log_area"    %in% names(df_full)) grid_full$log_area    <- mean(df_full$log_area,    na.rm=TRUE)
-grid_full$lpm_hat   <- pmin(1, pmax(0, as.numeric(predict(lpm_full,   newdata=grid_full, type="response"))))
-grid_full$logit_hat <- as.numeric(plogis(predict(logit_full, newdata=grid_full, type="link")))
-grid_full$pt_m    <- round(exp(grid_full$lpt)    - 1)
-grid_full$super_m <- round(exp(grid_full$lsuper) - 1)
-grid_full$duomo_m <- round(exp(grid_full$lduomo) - 1)
-
-# MIN_LOG: quartiles of lsuper, lduomo
-grid_min <- expand.grid(
-  lsuper = qfun(df_min$lsuper),
-  lduomo = qfun(df_min$lduomo)
-)
-grid_min$lpm_hat   <- pmin(1, pmax(0, as.numeric(predict(lpm_min,   newdata=grid_min, type="response"))))
-grid_min$logit_hat <- as.numeric(plogis(predict(logit_min, newdata=grid_min, type="link")))
-grid_min$super_m <- round(exp(grid_min$lsuper) - 1)
-grid_min$duomo_m <- round(exp(grid_min$lduomo) - 1)
-
-# SIMPLE_POLY_LINEAR: quartiles of linear distances
-grid_simple <- expand.grid(
-  dist_pt_100m    = qfun(df_simple$dist_pt_100m),
-  dist_super_100m = qfun(df_simple$dist_super_100m),
-  dist_duomo_km   = qfun(df_simple$dist_duomo_km)
-)
-grid_simple$lpm_hat   <- pmin(1, pmax(0, as.numeric(predict(lpm_simple,   newdata=grid_simple, type="response"))))
-grid_simple$logit_hat <- as.numeric(predict(logit_simple, newdata=grid_simple, type="response"))
-
-# --- 11) Write ONE consolidated report ---
+# --- 13) Write the TXT report ---
 say("CSV: ", csv_path)
 say("Output: ", out_file)
-say(sprintf("Rows kept — FULL_LOG: %d | MIN_LOG: %d | SIMPLE: %d (of %d)",
-            nrow(df_full), nrow(df_min), nrow(df_simple), nrow(df)))
-say(sprintf("Y mean — FULL_LOG: %.4f | MIN_LOG: %.4f | SIMPLE: %.4f",
-            mean(df_full$has_poi), mean(df_min$has_poi), mean(df_simple$has_poi)))
-say("Distance sources for LOG specs: row-wise POI→facility preferred; polygon with outside fallback otherwise.")
-say("RHS — FULL_LOG: ", rhs_full)
-say("RHS — MIN_LOG : ", rhs_min)
-say("RHS — SIMPLE_POLY_LINEAR: dist_pt_100m + dist_super_100m + dist_duomo_km + squares + interaction")
+say(sprintf("Rows kept — FULL_LOG: %d | MIN_LOG: %d (of %d)", nrow(df_full), nrow(df_min), nrow(df))); .flush()
+say("RHS — FULL_LOG: ", rhs_full); say("RHS — MIN_LOG : ", rhs_min); .flush()
 
-dump_obj(lpm_full_hc1,   "\n=== FULL_LOG — LPM (HC1) ===")
-dump_obj(lpm_full_cl,    "=== FULL_LOG — LPM (cluster ~1km) ===")
-dump_obj(logit_full_hc1, "=== FULL_LOG — Logit (HC1) ===")
-dump_obj(logit_full_cl,  "=== FULL_LOG — Logit (cluster ~1km) ===")
-dump_obj(grid_full[, c("pt_m","super_m","duomo_m","lpm_hat","logit_hat")],
-         "=== FULL_LOG — Predicted probabilities (quartiles) ===")
+# FULL — LPM
+if (is_err(lpm_full)) {
+  dump_obj(paste("FULL_LOG — LPM not fitted:", lpm_full$.error_), "\n=== FULL_LOG — LPM ===")
+} else {
+  dump_obj(gof_lm(lpm_full),                                       "\n=== FULL_LOG — LPM: Goodness-of-fit ===")
+  dump_obj(coeftest(lpm_full, vcov = hc1(lpm_full)),                "=== FULL_LOG — LPM Coefs (HC1) ===")
+  dump_obj(coeftest(lpm_full, vcov = cl_vc(lpm_full, clust_full)),  "=== FULL_LOG — LPM Coefs (cluster ~1km, HC1) ===")
+  dump_obj(coeftest(lpm_full, vcov = safe_vcov(lpm_full, "CR2", clust_full)), "=== FULL_LOG — LPM Coefs (cluster ~1km, CR2) ===")
+}
 
-dump_obj(lpm_min_hc1,    "\n=== MIN_LOG — LPM (HC1) ===")
-dump_obj(lpm_min_cl,     "=== MIN_LOG — LPM (cluster ~1km) ===")
-dump_obj(logit_min_hc1,  "=== MIN_LOG — Logit (HC1) ===")
-dump_obj(logit_min_cl,   "=== MIN_LOG — Logit (cluster ~1km) ===")
-dump_obj(grid_min[, c("super_m","duomo_m","lpm_hat","logit_hat")],
-         "=== MIN_LOG — Predicted probabilities (quartiles) ===")
+# FULL — Logit
+if (is_err(logit_full)) {
+  dump_obj(paste("FULL_LOG — Logit not fitted:", logit_full$.error_), "\n=== FULL_LOG — Logit ===")
+} else {
+  dump_obj(gof_logit(logit_full),                                       "\n=== FULL_LOG — Logit: Goodness-of-fit ===")
+  dump_obj(coeftest(logit_full, vcov = hc1(logit_full)),                 "=== FULL_LOG — Logit Coefs (HC1) ===")
+  dump_obj(coeftest(logit_full, vcov = cl_vc(logit_full, clust_full)),   "=== FULL_LOG — Logit Coefs (cluster ~1km, HC1) ===")
+  dump_obj(coeftest(logit_full, vcov = safe_vcov(logit_full, "CR2", clust_full)), "=== FULL_LOG — Logit Coefs (cluster ~1km, CR2) ===")
+  amef <- ame_all(logit_full, clust_full, B=300L)
+  dump_obj(amef$Regressors, "=== FULL_LOG — Logit Average Marginal Effects (ALL regressors, HC1/engine shown) ===")
+  dump_obj(amef$Cluster,    "=== FULL_LOG — Logit Average Marginal Effects (ALL regressors, cluster ~1km) ===")
+  dump_obj(amef$Base,       "=== FULL_LOG — Logit AMEs (decomposed base variables: c_lpt, c_lsuper, c_lduomo; HC1) ===")
+}
 
-dump_obj(lpm_simple_hc1,   "\n=== SIMPLE_POLY_LINEAR — LPM (HC1) ===")
-dump_obj(lpm_simple_cl,    "=== SIMPLE_POLY_LINEAR — LPM (cluster ~1km) ===")
-dump_obj(logit_simple_hc1, "=== SIMPLE_POLY_LINEAR — Logit (HC1) ===")
-dump_obj(logit_simple_cl,  "=== SIMPLE_POLY_LINEAR — Logit (cluster ~1km) ===")
-dump_obj(grid_simple[, c("dist_pt_100m","dist_super_100m","dist_duomo_km","lpm_hat","logit_hat")],
-         "=== SIMPLE_POLY_LINEAR — Predicted probabilities (quartiles) ===")
+# MIN — LPM
+if (is_err(lpm_min)) {
+  dump_obj(paste("MIN_LOG — LPM not fitted:", lpm_min$.error_), "\n=== MIN_LOG — LPM ===")
+} else {
+  dump_obj(gof_lm(lpm_min),                                      "\n=== MIN_LOG — LPM: Goodness-of-fit ===")
+  dump_obj(coeftest(lpm_min, vcov = hc1(lpm_min)),                "=== MIN_LOG — LPM Coefs (HC1) ===")
+  dump_obj(coeftest(lpm_min, vcov = cl_vc(lpm_min, clust_min)),   "=== MIN_LOG — LPM Coefs (cluster ~1km, HC1) ===")
+  dump_obj(coeftest(lpm_min, vcov = safe_vcov(lpm_min, "CR2", clust_min)), "=== MIN_LOG — LPM Coefs (cluster ~1km, CR2) ===")
+}
 
-say("\nAll done. Single consolidated report at:")
-say(out_file)
-# ================= END run_all_proximity_models_single_txt.R =================
+# MIN — Logit
+if (is_err(logit_min)) {
+  dump_obj(paste("MIN_LOG — Logit not fitted:", logit_min$.error_), "\n=== MIN_LOG — Logit ===")
+} else {
+  dump_obj(gof_logit(logit_min),                                      "\n=== MIN_LOG — Logit: Goodness-of-fit ===")
+  dump_obj(coeftest(logit_min, vcov = hc1(logit_min)),                 "=== MIN_LOG — Logit Coefs (HC1) ===")
+  dump_obj(coeftest(logit_min, vcov = cl_vc(logit_min, clust_min)),    "=== MIN_LOG — Logit Coefs (cluster ~1km, HC1) ===")
+  dump_obj(coeftest(logit_min, vcov = safe_vcov(logit_min, "CR2", clust_min)), "=== MIN_LOG — Logit Coefs (cluster ~1km, CR2) ===")
+  amem <- ame_all(logit_min, clust_min, B=300L)
+  dump_obj(amem$Regressors, "=== MIN_LOG — Logit Average Marginal Effects (ALL regressors, HC1/engine shown) ===")
+  dump_obj(amem$Cluster,    "=== MIN_LOG — Logit Average Marginal Effects (ALL regressors, cluster ~1km) ===")
+  dump_obj(amem$Base,       "=== MIN_LOG — Logit AMEs (decomposed base variables: c_lsuper, c_lduomo; HC1) ===")
+}
+
+# IC comparisons
+aic_tab <- ic_table(
+  c("FULL_LPM","FULL_Logit","MIN_LPM","MIN_Logit"),
+  c(safe_ic(lpm_full,AIC), safe_ic(logit_full,AIC), safe_ic(lpm_min,AIC), safe_ic(logit_min,AIC))
+)
+bic_tab <- ic_table(
+  c("FULL_LPM","FULL_Logit","MIN_LPM","MIN_Logit"),
+  c(safe_ic(lpm_full,BIC), safe_ic(logit_full,BIC), safe_ic(lpm_min,BIC), safe_ic(logit_min,BIC))
+)
+dump_obj(aic_tab, "\n=== Information Criteria — AIC (lower is better) ===")
+dump_obj(bic_tab, "=== Information Criteria — BIC (lower is better) ===")
+
+say("\nNotes:")
+say("- Distances are skewed: using log1p(distance_m) -> lpt, lsuper, lduomo.")
+say("- Squares & interactions use centered variables: c_lpt, c_lsuper, c_lduomo (reduces collinearity; main effects at sample means).")
+say("- Predictions/AIC/BIC unchanged; interpretation improved.")
+say("- SE types: HC1 (robust), cluster HC1 (~1km), and CR2 (~1km, small-sample corrected via clubSandwich).")
+say("- LPM coefficients are marginal effects on probability (constant slope). Logit coefficients are log-odds; AMEs translate to probability scale.")
+say("- Compare AIC/BIC only across models fit on the same rows & outcome.")
+say("\nAll done. Single consolidated report at:"); say(out_file); .flush()
+
+# ===================== 14) LaTeX TABLE EXPORT =====================
+tables_dir <- file.path(out_dir, "tables")
+dir.create(tables_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Helper: save modelsummary LaTeX
+save_msum <- function(models, vcov_list, title, note, file_out,
+                      stars = c("*"=0.1, "**"=0.05, "***"=0.01)) {
+  tab <- modelsummary::msummary(
+    models,
+    vcov       = vcov_list,
+    statistic  = "({std.error})",
+    stars      = stars,
+    output     = "latex",
+    title      = title,
+    coef_rename= c(`(Intercept)` = "Constant"),
+    gof_omit   = "IC|Log|AIC|BIC",
+    notes      = note,
+    escape     = TRUE
+  )
+  writeLines(tab, file_out)
+}
+
+# Helper: save data.frame as LaTeX with kableExtra
+save_df_latex <- function(df, caption, file_out, note=NULL) {
+  kbl <- kableExtra::kbl(df, format="latex", booktabs=TRUE, longtable=FALSE,
+                         caption=caption, linesep="", escape=TRUE)
+  if (!is.null(note)) {
+    kbl <- kbl %>% kableExtra::add_footnote(note, notation="none", threeparttable=TRUE)
+  }
+  cat(as.character(kbl), file=file_out)
+}
+
+# Prepare model lists & vcovs
+models_all <- list(
+  "FULL_LPM"   = if (!is_err(lpm_full))   lpm_full   else NULL,
+  "FULL_Logit" = if (!is_err(logit_full)) logit_full else NULL,
+  "MIN_LPM"    = if (!is_err(lpm_min))    lpm_min    else NULL,
+  "MIN_Logit"  = if (!is_err(logit_min))  logit_min  else NULL
+)
+models_all <- models_all[!vapply(models_all, is.null, logical(1))]
+
+vcov_hc1 <- lapply(models_all, function(m) safe_vcov(m, "HC1"))
+clusters <- list(
+  "FULL_LPM"   = clust_full, "FULL_Logit" = clust_full,
+  "MIN_LPM"    = clust_min,  "MIN_Logit"  = clust_min
+)
+vcov_cl  <- mapply(function(m,nm){
+  cl <- clusters[[nm]]; safe_vcov(m, "cluster", cluster = cl)
+}, m = models_all, nm = names(models_all), SIMPLIFY = FALSE)
+vcov_cr2 <- mapply(function(m,nm){
+  cl <- clusters[[nm]]; safe_vcov(m, "CR2", cluster = cl)
+}, m = models_all, nm = names(models_all), SIMPLIFY = FALSE)
+
+# 14.1 Coefficient tables (HC1)
+coef_hc1_tex <- file.path(tables_dir, "coef_all_HC1.tex")
+save_msum(
+  models   = models_all,
+  vcov_list= vcov_hc1,
+  title    = "Effect of Proximity on Shop Presence — Coefficients (HC1 SEs)",
+  note     = "Robust (HC1) standard errors in parentheses. *** p<0.01, ** p<0.05, * p<0.1.",
+  file_out = coef_hc1_tex
+)
+
+# 14.2 Coefficient tables (Cluster HC1)
+coef_cl_tex <- file.path(tables_dir, "coef_all_clusterHC1.tex")
+save_msum(
+  models   = models_all,
+  vcov_list= vcov_cl,
+  title    = "Effect of Proximity on Shop Presence — Coefficients (Clustered SEs, ~1km, HC1)",
+  note     = "Cluster-robust (HC1) SEs by ~1km grid in parentheses. *** p<0.01, ** p<0.05, * p<0.1.",
+  file_out = coef_cl_tex
+)
+
+# 14.3 Coefficient tables (Cluster CR2)
+coef_cr2_tex <- file.path(tables_dir, "coef_all_clusterCR2.tex")
+save_msum(
+  models   = models_all,
+  vcov_list= vcov_cr2,
+  title    = "Effect of Proximity on Shop Presence — Coefficients (Clustered SEs, ~1km, CR2)",
+  note     = "Cluster-robust CR2 (clubSandwich) standard errors by ~1km grid. *** p<0.01, ** p<0.05, * p<0.1.",
+  file_out = coef_cr2_tex
+)
+
+# 14.4 AMEs tables for LOGIT models (HC1 and cluster) — kept as before
+make_ame_table <- function(glmmod, clust, caption, file_base) {
+  if (inherits(glmmod, "fit_error")) return(invisible(NULL))
+  ames <- ame_all(glmmod, clust, B=300L)
+  # Regressors (engine-reported)
+  reg_df <- ames$Regressors
+  reg_tex <- file.path(tables_dir, paste0(file_base, "_regressors.tex"))
+  save_df_latex(reg_df, caption=paste0(caption, " — AMEs (All regressors)"),
+                file_out=reg_tex,
+                note="AMEs on probability scale. Engine column shows method: marginaleffects / margins / parametric bootstrap.")
+  # Base variables (centered)
+  base_df <- ames$Base
+  base_tex <- file.path(tables_dir, paste0(file_base, "_basevars.tex"))
+  save_df_latex(base_df, caption=paste0(caption, " — AMEs (Base variables: c_lpt, c_lsuper, c_lduomo)"),
+                file_out=base_tex,
+                note="Derived AMEs aggregating squares/interactions onto centered base variables.")
+}
+if (!is_err(logit_full)) make_ame_table(logit_full, clust_full, "FULL_LOG — Logit", "ames_full_logit")
+if (!is_err(logit_min))  make_ame_table(logit_min,  clust_min,  "MIN_LOG — Logit",  "ames_min_logit")
+
+# 14.5 IC comparison tables (AIC/BIC)
+try(save_df_latex(aic_tab, "Information Criteria — AIC (lower is better)",
+                  file_out = file.path(tables_dir, "ic_aic.tex")), silent=TRUE)
+try(save_df_latex(bic_tab, "Information Criteria — BIC (lower is better)",
+                  file_out = file.path(tables_dir, "ic_bic.tex")), silent=TRUE)
+
+# 14.6 README with \input examples
+readme_lines <- c(
+  "% === How to include the generated tables in LaTeX ===",
+  "% Requires \\usepackage{booktabs} in your preamble.",
+  "% Coefficients (HC1):",
+  "\\input{tables/coef_all_HC1.tex}",
+  "% Coefficients (Clustered, HC1):",
+  "\\input{tables/coef_all_clusterHC1.tex}",
+  "% Coefficients (Clustered, CR2):",
+  "\\input{tables/coef_all_clusterCR2.tex}",
+  "% AMEs (FULL Logit, regressors):",
+  "\\input{tables/ames_full_logit_regressors.tex}",
+  "% AMEs (FULL Logit, base variables):",
+  "\\input{tables/ames_full_logit_basevars.tex}",
+  "% AMEs (MIN Logit, regressors):",
+  "\\input{tables/ames_min_logit_regressors.tex}",
+  "% AMEs (MIN Logit, base variables):",
+  "\\input{tables/ames_min_logit_basevars.tex}",
+  "% Information Criteria:",
+  "\\input{tables/ic_aic.tex}",
+  "\\input{tables/ic_bic.tex}"
+)
+writeLines(readme_lines, file.path(tables_dir, "README_tables.tex"))
+cat("\nLaTeX tables written to: ", tables_dir, "\n")
+# ================= END fullanalysis.R =================
