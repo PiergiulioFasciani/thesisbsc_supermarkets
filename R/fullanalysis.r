@@ -23,9 +23,12 @@ options(modelsummary_factory_latex = "kableExtra")
 options(modelsummary_format_numeric_latex = "plain")
 options(modelsummary_get = "broom")   # ensure valid atomic scalar
 
-# --- 1) Load CSV (ignore '#' preamble lines) ---
-csv_path <- ""  # leave "" to pick interactively
+# --- 1) Load CSV (accept CLI arg; fall back to picker) ---
+args <- commandArgs(trailingOnly = TRUE)
+csv_path <- if (length(args) >= 1) args[[1]] else ""
+
 if (!nzchar(csv_path)) {
+  # interactive fallback only if no arg was given
   csv_path <- tryCatch({
     if (requireNamespace("rstudioapi", quietly=TRUE) && rstudioapi::isAvailable())
       rstudioapi::selectFile("Select quadtree CSV", label="Select")
@@ -34,8 +37,13 @@ if (!nzchar(csv_path)) {
     else file.choose()
   }, error=function(e) "")
 }
-stopifnot(nzchar(csv_path))
-df <- read.csv(csv_path, check.names = TRUE, comment.char = "#")
+
+if (!nzchar(csv_path) || !file.exists(csv_path)) {
+  stop("CSV not found: ", csv_path)
+}
+
+csv_path <- normalizePath(csv_path, winslash = "/", mustWork = TRUE)
+df <- read.csv(csv_path, check.names = TRUE, comment.char = "#")
 
 # --- 2) Output (single TXT) ---
 out_dir <- file.path(dirname(csv_path),
