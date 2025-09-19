@@ -67,7 +67,7 @@ To make this codebase run on your system do the following:
       - R 4.2 or above;
       - Python 3.10 or above;
 
-   - On Windows [NOT WORKING RIGHT NOW, PLEASE USE LINUX OR MACOS]:
+   - On Windows:
       - Ensure you have Python and R added to your PATH (environment variable) and installed pyenv
       - Double click run_all.bat;
          - At the end, you can see the .txt file with the models' results;
