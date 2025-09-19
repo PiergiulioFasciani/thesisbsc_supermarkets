@@ -26,23 +26,18 @@ After this procedure is completed, two files are created and stored in the "data
    - A .gpkg file is created and can be opened in QGIS (open source software) for visualizing the parsing and splitting results;
    - A .csv file is created and it contains:
      - tile_id: numerical ID for the tile obtained through quadtree;
-     - depth: number of subdivisions necessary to isolate that tile;
+     - qt_depth: number of subdivisions necessary to isolate that tile;
      - n_pois: number of POIs in the tile (1 max, residual from previous experiment, will be fixed later);
      - has_poi: binary variable that states if in a tile there is a POI;
      - n_poc: number of POCs in the tile (1 max, residual from previous experiment, will be fixed later);
      - has_poc: binary variable that states if in a tile there is a POC;
-     - center_lon: longitude of the tile's centroid;
-     - center_lat: latitude of the tile's centroid;
-     - tile_side_m: length in meters of the tile's side;
-     - tile_area_m2: area in squared meters of the tile;
-     - dist_poly_to_pt_m: distance in meters from the tile's boundary to the closest public transport stop (=0 if it is inside the tile);
-     - dist_poly_to_supermarket_m: distance in meters from the tile's boundary to the closest supermarket stop (=0 if it is inside the tile);
-     - dist_poly_to_duomo_m: distance in meters from the tile's boundary to the closest Duomo (proxy for city center) stop (=0 if it is inside the tile);
-     - dist_poly_to_pt_outside_m: distance in meters from the tile's boundary to the closest public transport stop outside the tile;
-     - dist_poly_to_supermarket_outside_m: distance in meters from the tile's boundary to the closest supermarket outside the tile;
-     - poi2super_min_m: distance in meters from the tile's POI (if present) to the nearest supermarket;
-     - poi2pt_min_m: distance in meters from the tile's POI (if present) to the nearest public transport stop;
-     - poi2duomo_min_m: distance in meters from the tile's POI (if present) to Duomo;
+     - lon: longitude of the tile's centroid;
+     - lat: latitude of the tile's centroid;
+     - side_m: length in meters of the tile's side;
+     - area_m2: area in squared meters of the tile;
+     - d_pt_m: distance in meters from the tile's boundary to the closest public transport stop outside the tile;
+     - d_super_m: distance in meters from the tile's boundary to the closest supermarket stop outside the tile;
+     - d_duomo_m: distance in meters from the tile's boundary to Duomo (proxy for city center) outside the tile;
      - pt_cnt_200m: count of public transport stops within 200m of the tile's boundary;
      - pt_cnt_400m: count of public transport stops within 400m of the tile's boundary;
      - super_cnt_300m: count of supermarkets within 300m of the tile's boundary;
@@ -51,19 +46,18 @@ After this procedure is completed, two files are created and stored in the "data
 After the sampling is carried out, a fullanalysis.r file begins an analysis in the following way:
    - Allows the user to load any .csv file from the sampling at choice;
    - Creates an output folder in the data folder;
-   - If polygon-to-POI/Duomo/supermarket/PT = 0, swap to outside-of-tile measurements;
-   - Prefers POI-supermarket/PT/Duomo distances, if available, or use polygon distances;
+   - Utilize POI-supermarket/PT/Duomo distances, if available, or use tile-boundary based distances;
    - Transforms distances into logarithms (reduces heavy-tails, betters handling);
+   - Subtracts to such logs of distances the average of the logs of distances (centering of variables, reduction of collinearity); 
    - Creates three models:
-      - Full logistic regression model: has_poi ~ lpt + lsuper + lduomo + squares + interaction + density and area controls;
-      - Simpler logistic regression model: has_poi ~ lsuper + lduomo + interactions;
-      - Simpler LPM model: has_poi ~ dist_pt_100m + dist_super_100m + dist_duomo_km + interactions + squares;
+      - Full logistic regression model: has_poi ~ c_pt + c_super + c_duomo + squares + interaction + density and area controls;
+      - Simpler logistic regression model: has_poi ~ c_super + c_duomo + squares and interactions;
 
    - Conducts robust inference twice by:
       - Computing heteroskedasticity-robust SEs on the entire sample;
       - Computing heteroskedasticity-robust SEs on 1km radius clusters per-tile in the entire sample.
 
-   - Compiles a neat summary .txt file found in the data folder.
+   - Compiles a neat summary .txt file found in the data folder and (for now a bit crude) latex tables.
 
 ### How to make it work?
 
@@ -73,7 +67,7 @@ To make this codebase run on your system do the following:
       - R 4.2 or above;
       - Python 3.10 or above;
 
-   - On Windows:
+   - On Windows [NOT WORKING RIGHT NOW, PLEASE USE LINUX OR MACOS]:
       - Ensure you have Python and R added to your PATH (environment variable) and installed pyenv
       - Double click run_all.bat;
          - At the end, you can see the .txt file with the models' results;
@@ -86,7 +80,7 @@ To make this codebase run on your system do the following:
       - `./run_all.sh`
          - At the end, you can see the .txt file with the models' results;
       - The model is agnostic by design, you can choose to modify the AOI in bash (EXAMPLE, USE QGIS TO FETCH COORDINATES):
-         - CENTER="45.47,9.20" RADIUS_M=2000 bash run_all.sh;          
+         - CENTER="45.47,9.20" RADIUS_M=2000 bash run_all.sh; MODIFY RADIUS TO SEE THE DIFFERENCES IN INFERENCE AND ESTIMATION GIVEN THE SAME AOI CENTER.          
 
 ### Troubleshooting
 
