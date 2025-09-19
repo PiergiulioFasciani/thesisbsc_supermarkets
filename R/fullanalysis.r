@@ -43,7 +43,7 @@ if (!nzchar(csv_path) || !file.exists(csv_path)) {
 }
 
 csv_path <- normalizePath(csv_path, winslash = "/", mustWork = TRUE)
-df <- read.csv(csv_path, check.names = TRUE, comment.char = "#")
+df <- read.csv(csv_path, check.names = TRUE, comment.char = "#")
 
 # --- 2) Output (single TXT) ---
 out_dir <- file.path(dirname(csv_path),
@@ -299,8 +299,8 @@ ame_all <- function(glmmod, clust=NULL, B=300L) {
     me_reg <- tryCatch(format_me(summary(marginaleffects::avg_slopes(glmmod, vcov="HC1")), "marginaleffects (HC1)"),
                        error=function(e) NULL)
     if (!is.null(clust) && length(unique(clust))>1) {
-      me_reg_cl <- tryCatch(format_me(summary(marginaleffects::avg_slopes(
-        glmmod, vcov=sandwich::vcovCL, vcov.args=list(cluster=clust, type="HC1"))),
+      me_reg_cl <- tryCatch(format_me(summary(suppressWarnings(marginaleffects::avg_slopes(
+        glmmod, vcov=sandwich::vcovCL, vcov.args=list(cluster=clust, type="HC1"))))),
         "marginaleffects (cluster HC1)"),
         error=function(e) data.frame(Note=paste("marginaleffects cluster failed:", e$message)))
     } else me_reg_cl <- data.frame(Note="AME cluster skipped (need ≥2 clusters)")
