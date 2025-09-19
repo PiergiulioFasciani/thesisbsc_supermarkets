@@ -54,7 +54,7 @@ if ! command -v Rscript >/dev/null 2>&1; then
   exit 1
 fi
 echo "Running R analysis on: $CSV_HINT"
-Rscript R/fullanalysis.r "$CSV_HINT"
+Rscript R/fullanalysis.R "$CSV_HINT"
 
 # --- Point to the final one-stop report ---
 LATEST_REPORT="$(ls -1dt "$OUT_DIR"/quadtree_*/*/ 2>/dev/null | grep model_summaries | head -n1 || true)"
