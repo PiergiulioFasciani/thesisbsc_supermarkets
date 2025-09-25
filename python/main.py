@@ -258,10 +258,29 @@ class AOIFilter:
             return False
         return self.aoi.covers(Point(lon, lat))
 
+class EnhancedAOIFilter:
+    """Enhanced AOI filter with expanded bounding box for global collections"""
+    def __init__(self, aoi_poly: Polygon, minx: float, miny: float, maxx: float, maxy: float):
+        self.aoi = aoi_poly
+        self.aoi_bounds = aoi_poly.bounds
+        self.expanded_bounds = (minx, miny, maxx, maxy)
+        
+    def contains_lonlat(self, lon: float, lat: float) -> bool:
+        """Check if point is in AOI (for AOI-only features)"""
+        minx, miny, maxx, maxy = self.aoi_bounds
+        if not (minx <= lon <= maxx and miny <= lat <= maxy):
+            return False
+        return self.aoi.covers(Point(lon, lat))
+    
+    def in_expanded_area(self, lon: float, lat: float) -> bool:
+        """Check if point is in expanded area (for global collections)"""
+        minx, miny, maxx, maxy = self.expanded_bounds
+        return (minx <= lon <= maxx and miny <= lat <= maxy)
+
 class OSMCollector(osm.SimpleHandler):
     """ AOI features: POIs, control (mortuary), supermarkets & PT (for GIS);
         GLOBAL sets: supermarkets + PT (for distances & buffer counts) """
-    def __init__(self, tm: TagMatcher, af: AOIFilter):
+    def __init__(self, tm: TagMatcher, af):
         super().__init__()
         self.tm, self.af = tm, af
         self.wkbf = osm.geom.WKBFactory()
@@ -272,17 +291,31 @@ class OSMCollector(osm.SimpleHandler):
     def _maybe_keep_aoi(self, f: Feature):
         if self.af.contains_lonlat(f.lon, f.lat):
             self.features.append(f)
+    
+    def _maybe_keep_global(self, f: Feature):
+        """Keep for global collections if in expanded area"""
+        if hasattr(self.af, 'in_expanded_area'):
+            return self.af.in_expanded_area(f.lon, f.lat)
+        else:
+            return True  # fallback for regular AOIFilter
 
     def node(self, n):
         kind = self.tm.match_kind(n.tags)
         if kind is None or not n.location.valid(): return
         lon, lat = n.location.lon, n.location.lat
+        
+        # Skip if completely outside expanded area for efficiency
+        if hasattr(self.af, 'in_expanded_area') and not self.af.in_expanded_area(lon, lat):
+            return
+            
         name = n.tags.get("name")
         if kind == "supermarket":
-            self.supers_global.append(Feature(n.id, lon, lat, name, kind, "node"))
+            if self._maybe_keep_global(Feature(n.id, lon, lat, name, kind, "node")):
+                self.supers_global.append(Feature(n.id, lon, lat, name, kind, "node"))
             self._maybe_keep_aoi(Feature(n.id, lon, lat, name, kind, "node")); return
         if kind == "transport":
-            self.pt_global.append(Feature(n.id, lon, lat, name, kind, "node"))
+            if self._maybe_keep_global(Feature(n.id, lon, lat, name, kind, "node")):
+                self.pt_global.append(Feature(n.id, lon, lat, name, kind, "node"))
             self._maybe_keep_aoi(Feature(n.id, lon, lat, name, "transport", "node")); return
         self._maybe_keep_aoi(Feature(n.id, lon, lat, name, kind, "node"))
 
@@ -299,28 +332,47 @@ class OSMCollector(osm.SimpleHandler):
             geom = shp_wkb.loads(wkb, hex=True)
             c = geom.centroid
             lon, lat = c.x, c.y
+            
+            # Skip if completely outside expanded area for efficiency
+            if hasattr(self.af, 'in_expanded_area') and not self.af.in_expanded_area(lon, lat):
+                return
+                
             name = a.tags.get("name")
             if kind == "supermarket":
-                self.supers_global.append(Feature(a.id, lon, lat, name, kind, "area"))
+                if self._maybe_keep_global(Feature(a.id, lon, lat, name, kind, "area")):
+                    self.supers_global.append(Feature(a.id, lon, lat, name, kind, "area"))
                 self._maybe_keep_aoi(Feature(a.id, lon, lat, name, kind, "area")); return
             if kind == "transport":
-                self.pt_global.append(Feature(a.id, lon, lat, name, kind, "area"))
+                if self._maybe_keep_global(Feature(a.id, lon, lat, name, kind, "area")):
+                    self.pt_global.append(Feature(a.id, lon, lat, name, kind, "area"))
                 self._maybe_keep_aoi(Feature(a.id, lon, lat, name, "transport", "area")); return
             self._maybe_keep_aoi(Feature(a.id, lon, lat, name, kind, "area"))
         except Exception:
             return
 
 def parse_pbf_inside_aoi(pbf_path: str, aoi_poly: Polygon):
-    banner("Step 2 — Reading OSM (AOI parse + GLOBAL supers/PT)")
+    banner("Step 2 — Reading OSM (AOI parse + GLOBAL supers/PT with efficient filtering)")
     tm, af = TagMatcher(), AOIFilter(aoi_poly)
+    
+    # Get bounding box for efficient pre-filtering
+    minx, miny, maxx, maxy = aoi_poly.bounds
+    # Expand by ~2km buffer to ensure we get all global supermarkets/PT for distance calculations
+    buffer_deg = 0.02  # approximately 2km at latitude ~45°
+    parse_minx, parse_miny = minx - buffer_deg, miny - buffer_deg
+    parse_maxx, parse_maxy = maxx + buffer_deg, maxy + buffer_deg
+    info(f"Target area: lon [{parse_minx:.6f}, {parse_maxx:.6f}], lat [{parse_miny:.6f}, {parse_maxy:.6f}]")
+    
+    # Use enhanced filter that pre-screens by bounding box
+    enhanced_af = EnhancedAOIFilter(aoi_poly, parse_minx, parse_miny, parse_maxx, parse_maxy)
+    
     if RICH:
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}")) as progress:
             task = progress.add_task("Parsing PBF…", total=None)
-            h = OSMCollector(tm, af)
+            h = OSMCollector(tm, enhanced_af)
             h.apply_file(str(pbf_path), locations=True, idx="flex_mem")
             progress.update(task, description="Finalizing…")
     else:
-        h = OSMCollector(tm, af)
+        h = OSMCollector(tm, enhanced_af)
         h.apply_file(str(pbf_path), locations=True, idx="flex_mem")
 
     def to_gdf(items: List[Feature]):
@@ -422,10 +474,15 @@ def main():
     info(f"PBF   : {pbf_path}")
     info(f"Out   : {out_dir}")
 
-    # AOI polygon (WGS84)
+    # Build AOI polygon first (WGS84)
+    banner("Step 1a — Building AOI")
     aoi_poly = circle_polygon_wgs84(center_lon=center_lon, center_lat=center_lat, radius_m=args.radius_m)
     minx, miny, maxx, maxy = aoi_poly.bounds
     info(f"AOI bbox (WGS84): lon [{minx:.6f}, {maxx:.6f}], lat [{miny:.6f}, {maxy:.6f}]")
+    
+    # Calculate area reduction for efficiency info
+    total_area_km2 = (maxx - minx) * (maxy - miny) * 111 * 111  # rough km²
+    info(f"AOI area: ~{abs(total_area_km2):.1f} km² (parsing with ~2km buffer)")
 
     # Step 2 — Parse OSM
     pois_wgs, poc_wgs, supers_wgs, pt_wgs, supers_global_wgs, pt_global_wgs = parse_pbf_inside_aoi(str(pbf_path), aoi_poly)
