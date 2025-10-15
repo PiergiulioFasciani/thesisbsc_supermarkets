@@ -1,0 +1,55 @@
+# DDD ANALYSIS SUMMARY REPORT
+# Generated: 2025-10-06 22:02:46.02752
+# Panel file: ddd_panel_20251006_220222_12000.csv
+
+## SAMPLE OVERVIEW
+Sites (clusters):     414
+Areas:                541
+Months:               93
+Categories:           7
+Total observations:   352,191
+Date range:           2018-01-01 to 2025-09-01
+
+Treatment shares:
+  A=1 (affected):     57.1%
+  A=0 (placebo):      42.9%
+
+## MODEL SPECIFICATIONS
+Fixed Effects: area×category + category×month + area×month
+Clustering: site_id
+Ring definitions: in=[0,500]m, mid=(500,1000]m, out=(1000,1500]m
+Panel window: 2018-01 to 2025-09
+Event time: -24 to +24 months (capped)
+Reference period: t=-1
+
+## BASELINE DDD RESULTS
+E×A coefficient:  -0.0871 (SE: 0.0660)
+p-value:          0.1869
+Interpretation:   NOT significant
+
+## BY-RING DDD RESULTS (Distance Decay)
+In ring (0-500m):      -0.2943 (SE: 0.0756)
+Mid ring (500-1000m):  0.3842 (SE: 0.0732)
+Out ring (1000-1500m): 0.0000 (reference)
+Pattern:               Distance decay pattern unclear
+
+## EVENT-STUDY RESULTS
+Pre-trend test p-value: 0.0685
+Pre-trends status:      NOT rejected (parallel trends OK)
+
+## OUTPUT FILES
+Tables:
+  - baseline_ddd.csv / .tex
+  - byring_ddd.csv / .tex
+  - eventstudy_ddd.csv
+
+Figures:
+  - event_study_ddd.png
+
+## INTERPRETATION NOTES
+- Baseline E×A: Overall effect of supermarket entry on affected vs placebo
+- By-ring: Distance decay suggests localized spillover effects
+- Event-study: Dynamic effects over time; pre-trends validate identification
+- Clustering at site level accounts for spatial correlation
+
+================================ END OF REPORT ================================
