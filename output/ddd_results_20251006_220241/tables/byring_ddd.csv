@@ -1,0 +1,3 @@
+"Variable","Coefficient","Std_Error","t_statistic","p_value","Sig"
+"EA_in","-0.2943","0.0756","-3.89","0.0001","***"
+"EA_mid","0.3842","0.0732","5.25","0.0000","***"
