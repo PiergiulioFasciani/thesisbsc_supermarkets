@@ -33,21 +33,20 @@ EXPORT/
 ├── run_stacked_ppml_event_study.sh        # Wrapper: Main PPML analysis
 ├── extract_lombardy.sh                    # Quick Lombardy extraction
 │
-├── data/
-│   ├── input/
-│   │   ├── .gitkeep
-│   │   └── lombardy.osh.pbf               # Lombardy OSM data
-│   └── output/
-│       ├── .gitkeep
-│       ├── samples/                       # OSM sampled data (sampler outputs)
-│       │   └── .gitkeep
-│       ├── panels/                        # Generated treatment panels
-│       │   └── .gitkeep
-│       └── analysis/                      # Analysis results
-│           └── .gitkeep
-│
-└── docs/                                  # Documentation
-    └── .gitkeep
+└── data/
+    ├── input/
+    │   ├── .gitkeep
+│   │   └── lombardy.osh.pbf               # Downloaded automatically by the sampler if missing
+    └── output/
+        ├── .gitkeep
+        ├── samples/                       # OSM sampled data (sampler outputs)
+        │   └── .gitkeep
+        ├── panels/                        # Generated treatment panels
+        │   └── .gitkeep
+        └── analysis/                      # Analysis results
+            └── .gitkeep
+
+
 ```
 
 ## Configuration
@@ -99,6 +98,8 @@ analysis:
 # Output: data/output/samples/<timestamp>/
 ```
 
+If `data/input/lombardy.osh.pbf` is missing, the sampler downloads it automatically from Google Drive using `sampler.google_drive_file_id` in `config.yml` or the `OSM_GOOGLE_DRIVE_FILE_ID` environment variable.
+
 ### 2. Generate Treatment Panels
 
 ```bash
@@ -127,7 +128,7 @@ analysis:
 ### Step 1: OSM Sampling (`osm_sampler.py`)
 
 **Input:**
-- OSM PBF file (e.g., `data/input/lombardy.osh.pbf`) from Geofabrik
+- OSM PBF file (e.g., `data/input/lombardy.osh.pbf`) downloaded from Google Drive, originally sourced from Geofabrik
 - AOI center (lon, lat) and radius (km) from `config.yml`
 
 **Process:**
@@ -258,6 +259,7 @@ sampler:
     lat: 45.4642     # Latitude of AOI center
   aoi_radius_km: 100 # Radius of analysis region (km)
   data_source: "osmium"
+  google_drive_file_id: "" # Optional: centralized download ID for the OSM file
 ```
 
 #### Panel Section
@@ -288,6 +290,7 @@ analysis:
 ### Adjusting Analysis Parameters
 
 - **Change region:** Update `aoi_center` and `aoi_radius_km` in `config.yml`, then run `./run_sampler.sh`
+- **Use a different OSM file:** Update `sampler.google_drive_file_id` or set `OSM_GOOGLE_DRIVE_FILE_ID`
 - **Change treatment buffer:** Update `aot_radius_m` in `config.yml`, then run `./run_panel_builder.sh`
 - **Change time window:** Update `pre_periods` and `post_periods`, then re-run analysis
 - **Check anticipation:** Set `anticipation.enabled: true` and adjust `anticipation.periods` (default 6 quarters)
