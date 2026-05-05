@@ -16,6 +16,8 @@ import argparse
 from collections import defaultdict
 import hashlib
 import math
+import os
+import urllib.request
 from shapely.geometry import Point, Polygon
 from shapely.ops import transform
 import pyproj
@@ -288,6 +290,43 @@ def get_workflow_config(config, section_name):
     return config
 
 
+def ensure_osm_file_exists(input_file, google_drive_file_id=None):
+    """Ensure the OSM file exists locally, downloading it from Google Drive if needed."""
+    input_path = Path(input_file)
+
+    if input_path.exists():
+        logger.info(f"OSM file found: {input_path}")
+        return str(input_path)
+
+    drive_id = google_drive_file_id or os.environ.get('OSM_GOOGLE_DRIVE_FILE_ID')
+    if not drive_id:
+        raise FileNotFoundError(
+            f"OSM file not found: {input_path}\n"
+            f"Set `sampler.google_drive_file_id` in config.yml or export OSM_GOOGLE_DRIVE_FILE_ID."
+        )
+
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    url = f"https://drive.google.com/uc?id={drive_id}&export=download&confirm=t"
+
+    def reporthook(block_num, block_size, total_size):
+        downloaded = block_num * block_size
+        if total_size > 0:
+            percent = min(downloaded * 100 / total_size, 100)
+            mb_downloaded = downloaded / (1024 * 1024)
+            mb_total = total_size / (1024 * 1024)
+            print(f"\r  Download progress: {percent:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end='', flush=True)
+
+    logger.info(f"Downloading OSM file from Google Drive (ID: {drive_id[:10]}...)")
+    urllib.request.urlretrieve(url, str(input_path), reporthook=reporthook)
+    print()
+
+    if not input_path.exists():
+        raise RuntimeError("Download completed but the file was not created")
+
+    logger.info(f"Download complete: {input_path}")
+    return str(input_path)
+
+
 def create_aoi_polygon(center_lat, center_lon, radius_meters):
     """Create a circular polygon for the AOI"""
     # Create a circle using azimuthal equidistant projection
@@ -324,6 +363,7 @@ def extract_establishments(input_file, output_dir, config_file=None,
     """
     # Load config if provided
     categories = {'pois': {}, 'supermarkets': {}, 'pocs': {}}
+    google_drive_file_id = None
     
     if config_file:
         config = load_config(config_file)
@@ -333,6 +373,7 @@ def extract_establishments(input_file, output_dir, config_file=None,
             'supermarkets': sampler_config.get('supermarkets', {}),
             'pocs': sampler_config.get('pocs', {})
         }
+        google_drive_file_id = sampler_config.get('google_drive_file_id')
         
         # Get AOI parameters from config
         if not center_lat:
@@ -344,6 +385,8 @@ def extract_establishments(input_file, output_dir, config_file=None,
             start_date = sampler_config.get('start_date')
         if not end_date:
             end_date = sampler_config.get('end_date')
+
+    input_file = ensure_osm_file_exists(input_file, google_drive_file_id)
     
     # Parse dates to timezone-aware datetime
     start_date_parsed = None
