@@ -1,0 +1,204 @@
+# Unified project configuration.
+#
+# Keep this as the single source of truth for all active workflows.
+#
+# Sections:
+#   analysis - stacked PPML event-study workflow in `scripts/stacked_ppml_event_study.R`
+#   panel    - panel construction workflow in `scripts/panel_builder.py`
+#   sampler  - OSM extraction workflow in `scripts/osm_sampler.py`
+#
+# Notes:
+#   - Empty strings usually mean "auto-detect" or "use script defaults".
+#   - Boolean flags are intentionally explicit so runs are reproducible.
+#   - Output paths are relative to the repository root unless overridden on the CLI.
+
+analysis:
+  # Optional input panel path.
+  # Leave blank to auto-detect the latest `data/output/panels/panel_*/panel.csv`.
+  input_file: ""
+
+  # Root directory for event-study outputs.
+  # The analysis script creates a timestamped subfolder inside this path.
+  output_dir: data/output/analysis
+
+  # Outcomes estimated by the stacked PPML pipeline.
+  # `count` = stock, `entries` = new openings, `exits` = closures.
+  outcomes:
+    - count
+    - entries
+    - exits
+
+  # Treatment/control labels used in reporting and interpretation only.
+  treatment_group: POI
+  control_group: POC
+
+  # Sample window for the panel before analysis.
+  # Keep blank to use the full panel date range.
+  start_date: "2015-01-01"
+  end_date: "2025-12-31"
+
+  # Time aggregation expected by the analysis script.
+  # `quarterly` is the active thesis specification.
+  time_aggregation: quarterly
+
+  # Optional cohort filters.
+  # Leave blank to include all cohorts in the panel.
+  cohort_start: ""
+  cohort_end: ""
+
+  # Event-time window in periods around treatment.
+  # These are interpreted as pre/post periods in the aggregated time unit.
+  pre_periods: 12
+  post_periods: 12
+
+  # Anticipation / robustness shift settings
+  # - `enabled`: whether to run the anticipation robustness (shift) analysis in addition to baseline.
+  #              Default: true
+  # - `periods`: number of aggregated periods (quarters when `time_aggregation: quarterly`) to shift
+  #              the event-time indexing by, adding these pre-periods to the estimated window.
+  #              Default: 6
+  # Behavior notes:
+  #  - When `enabled: true` and `periods > 0` the script runs an additional robustness analysis
+  #    that shifts event-time by `periods` (e.g. 6 quarters) to check pretrend balance and
+  #    robustness of the estimated ATT.
+  #  - Set `enabled: false` to skip the robustness shift run.
+  #  - The anticipation periods are in the same aggregation unit used by the analysis
+  #    (e.g., quarters when `time_aggregation: quarterly`).
+  anticipation:
+    enabled: true
+    periods: 6
+
+  # Sample restrictions.
+  drop_never_treated: false
+  min_obs_per_site: 0
+  balanced_panel: false
+
+  # Main estimator.
+  # `stacked` is the only supported design for the current thesis pipeline.
+  estimator: "stacked"
+
+  # Fixed effects toggle matrix used by the stacked PPML estimation.
+  fixed_effects:
+    cohort: true
+    site: true
+    time: true
+
+  # Clustering variable for robust standard errors.
+  cluster_var: site_id
+
+  # Optional site-specific trend controls.
+  site_trends: false
+
+  # Cohort heterogeneity grouping for the ancillary analysis.
+  cohort_grouping: three_group
+
+  # Export controls.
+  save_tables: true
+  save_plots: true
+
+  # Significance thresholds used for star coding in output tables/plots.
+  alpha_levels:
+    - 0.01
+    - 0.05
+    - 0.10
+
+  # Bootstrap settings for alternative inference.
+  bootstrap: false
+  bootstrap_reps: 1000
+
+  # Whether to use weights in the final specification.
+  use_weights: false
+
+panel:
+  # Optional establishments CSV path.
+  # Leave blank to auto-detect the latest sample in `data/output/samples/`.
+  input_file: ""
+
+  # Root directory for panel outputs.
+  # The panel builder writes `data/output/panels/panel_*` folders here.
+  output_dir: data/output
+
+  # Treatment site definition for panel construction.
+  treatment_type: Supermarket
+
+  # Radius in meters used to build the circular Area of Treatment (AOT).
+  aot_radius_m: 1000
+
+  # Outcome establishment types counted around each treatment site.
+  # Leave empty to include all non-treatment types.
+  outcome_types:
+    - POI
+    - POC
+
+  # Optional date range for panel construction.
+  # Blank values mean infer the range from the sample file.
+  start_date: "2015-01-01"
+  end_date: "2025-12-31"
+
+  # Optional categorical filtering by establishment type.
+  # Format: type -> list of allowed categories.
+  category_filter: {}
+
+  # Minimum number of nearby establishments required to keep a site.
+  min_establishments_per_site: 0
+
+  # Optional treatment timing filters.
+  treatment_start_date: ""
+  treatment_end_date: ""
+
+sampler:
+  # OSM history file to extract from.
+  # Update this if you replace Lombardy with a different region or filename.
+  input_file: data/input/lombardy.osh.pbf
+
+  # Root directory for sample outputs.
+  # The sampler writes `data/output/samples/sample_*` folders here.
+  output_dir: data/output
+
+  # Circular Area of Interest (AOI) centered on Milan.
+  center_lat: 45.4642
+  center_lon: 9.1900
+  radius_meters: 12000
+
+  # Optional extraction time window.
+  # Keep as-is for the full-history extraction used in the thesis pipeline.
+  start_date: "2010-01-01"
+  end_date: "2025-12-31"
+
+  # Establishment category definitions.
+  # Each leaf key names a category; each list item is a tag rule that matches it.
+  pois:
+    bakeries:
+      - shop: bakery
+    greengroceries:
+      - shop: greengrocer
+    butcheries:
+      - shop: butcher
+    convenience_stores:
+      - shop: convenience
+    delis:
+      - shop: deli
+    cheese_shops:
+      - shop: cheese
+    marketplaces:
+      - amenity: marketplace
+      - shop: marketplace
+    frozen_food_shops:
+      - shop: frozen_food
+
+  # Intervention sites for downstream causal analysis.
+  supermarkets:
+    supermarkets:
+      - shop: supermarket
+
+  # Control-group establishments for downstream comparison.
+  pocs:
+    hotels_hostels:
+      - tourism: hotel
+      - tourism: hostel
+    furniture_jewelry_opticians:
+      - shop: furniture
+      - shop: jewelry
+      - shop: optician
+    bookshops:
+      - shop: books
