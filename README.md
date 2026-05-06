@@ -28,9 +28,12 @@ EXPORT/
 │   ├── stacked_ppml_event_study.R         # Main PPML analysis orchestrator
 │   └── install_honestdid.R                # HonestDiD dependency installer
 │
-├── run_sampler.sh                         # Wrapper: OSM extraction
-├── run_panel_builder.sh                   # Wrapper: Panel generation
-├── run_stacked_ppml_event_study.sh        # Wrapper: Main PPML analysis
+├── run_sampler.sh                         # Wrapper: OSM extraction (macOS/Linux)
+├── run_sampler.bat                        # Wrapper: OSM extraction (Windows)
+├── run_panel_builder.sh                   # Wrapper: Panel generation (macOS/Linux)
+├── run_panel_builder.bat                  # Wrapper: Panel generation (Windows)
+├── run_stacked_ppml_event_study.sh        # Wrapper: Main PPML analysis (macOS/Linux)
+├── run_stacked_ppml_event_study.bat       # Wrapper: Main PPML analysis (Windows)
 ├── extract_lombardy.sh                    # Quick Lombardy extraction
 │
 └── data/
@@ -93,9 +96,17 @@ analysis:
 ### 1. Extract OSM Data for Your Region
 
 ```bash
+# macOS/Linux:
 # Edit config.yml to set your region (aoi_center, aoi_radius_km)
 ./run_sampler.sh
 # Output: data/output/samples/<timestamp>/
+```
+
+**Windows:**
+```batch
+REM Edit config.yml to set your region (aoi_center, aoi_radius_km)
+run_sampler.bat
+REM Output: data\output\samples\<timestamp>\
 ```
 
 If `data/input/lombardy.osh.pbf` is missing, the sampler downloads it automatically from Google Drive using `sampler.google_drive_file_id` in `config.yml` or the `OSM_GOOGLE_DRIVE_FILE_ID` environment variable.
@@ -103,22 +114,39 @@ If `data/input/lombardy.osh.pbf` is missing, the sampler downloads it automatica
 ### 2. Generate Treatment Panels
 
 ```bash
+# macOS/Linux:
 # Uses latest sample and config AOT radius
 ./run_panel_builder.sh
 # Output: data/output/panels/panel_<timestamp>/panel.csv
 ```
 
+**Windows:**
+```batch
+REM Uses latest sample and config AOT radius
+run_panel_builder.bat
+REM Output: data\output\panels\panel_<timestamp>\panel.csv
+```
+
 ### 3. Run PPML Event-Study Analysis
 
 ```bash
+# macOS/Linux:
 # Uses latest panel, estimates stacked PPML models
 ./run_stacked_ppml_event_study.sh
 # Output: data/output/analysis/stacked_ppml_es_<timestamp>_baseline_<year_range>/
 ```
 
+**Windows:**
+```batch
+REM Uses latest panel, estimates stacked PPML models
+run_stacked_ppml_event_study.bat
+REM Output: data\output\analysis\stacked_ppml_es_<timestamp>_baseline_<year_range>\
+```
+
 ### 4. Run Complete Pipeline
 
 ```bash
+# macOS/Linux:
 # Execute sampler → panel builder → analysis in sequence
 ./run_complete_analysis.sh
 ```
@@ -387,6 +415,131 @@ pip install geopandas pandas pyyaml shapely
 # System tools (macOS)
 brew install osmium-tool
 ```
+
+## Windows Setup & Usage Guide
+
+The pipeline includes native Windows batch file wrappers (`.bat` files) for all three main steps, providing the same functionality and experience as the macOS/Linux shell scripts.
+
+### Windows Prerequisites
+
+**1. Install Python 3.10+**
+- Download from https://www.python.org/downloads/
+- **Important:** Check "Add Python to PATH" during installation
+- Verify: Open Command Prompt and run `python --version`
+
+**2. Install R 4.0+**
+- Download from https://cran.r-project.org/
+- Accept default installation options
+- Verify: Open Command Prompt and run `Rscript --version`
+
+**3. Install Required Python Packages**
+```batch
+pip install geopandas pandas pyyaml shapely osmium tqdm
+```
+
+**4. Install OSM Extraction Tool (Osmium)**
+```batch
+pip install osmium
+```
+
+**5. Install R Packages**
+Open Command Prompt and run:
+```batch
+Rscript -e "install.packages(c('fixest', 'ggplot2', 'dplyr', 'tidyr', 'data.table', 'yaml', 'zoo', 'car'))"
+```
+
+Then install HonestDiD:
+```batch
+Rscript -e "if (!require('devtools')) install.packages('devtools'); devtools::install_github('asheshrambachan/HonestDiD')"
+```
+
+### Running the Pipeline on Windows
+
+Navigate to the EXPORT folder in Command Prompt and run the batch files:
+
+**1. Extract OSM Data**
+```batch
+run_sampler.bat
+```
+- Validates config.yml
+- Checks Python dependencies
+- Downloads OSM file from Google Drive if missing
+- Extracts establishments for your region
+- Output: `data\output\samples\<timestamp>\`
+
+**2. Generate Treatment Panels**
+```batch
+run_panel_builder.bat
+```
+- Auto-detects latest sample
+- Creates Area of Treatment (AOT) buffers
+- Generates time-series panel
+- Output: `data\output\panels\panel_<timestamp>\panel.csv`
+
+Optionally specify a sample directory:
+```batch
+run_panel_builder.bat data\output\samples\sample_name
+```
+
+**3. Run PPML Event-Study Analysis**
+```batch
+run_stacked_ppml_event_study.bat
+```
+- Checks R installation and packages
+- Auto-installs missing dependencies
+- Validates panel data
+- Runs stacked PPML estimation with HonestDiD
+- Output: `data\output\analysis\stacked_ppml_es_<timestamp>_baseline_<year_range>\`
+
+### Batch File Features
+
+All Windows batch files include:
+
+- **Dependency checking:** Validates Python, R, and required packages
+- **Auto-installation:** Missing R packages are installed automatically
+- **Error handling:** Clear error messages if prerequisites are missing
+- **Progress tracking:** Visual feedback with [OK], [FAIL], and [>>] indicators
+- **File validation:** Checks for required input files before running
+- **Pause on exit:** Results remain visible after script completion
+
+### Windows-Specific Notes
+
+1. **File Paths:** Use backslashes (`\`) in batch files, but Python/R handle both `/` and `\`
+2. **Command Prompt:** Run batch files from Command Prompt or PowerShell
+3. **Conda Users:** If using Conda, batch files use the system Python by default. To use a Conda environment:
+   ```batch
+   conda activate your_env_name
+   run_sampler.bat
+   ```
+4. **Spaces in Paths:** All batch files handle paths with spaces correctly
+5. **Output Directories:** Windows batch files create the same output structure as Unix scripts
+
+### Troubleshooting Windows Issues
+
+**"Python is not installed or not in PATH"**
+- Reinstall Python and ensure "Add Python to PATH" is checked
+- Restart Command Prompt after installation
+- Verify: `python --version`
+
+**"R is not installed or not in PATH"**
+- Reinstall R with default options
+- Verify: `Rscript --version`
+
+**"Package installation failed"**
+- Run batch files as Administrator (right-click → Run as Administrator)
+- Or manually install packages:
+  ```batch
+  Rscript -e "install.packages('package_name', repos = 'https://cloud.r-project.org/')"
+  ```
+
+**"No panel directories found"**
+- Ensure `run_sampler.bat` completed successfully
+- Check that `data\output\samples\` contains files
+- Check for error messages in the sampler output
+
+**Permission Denied Errors**
+- Right-click the Command Prompt and select "Run as Administrator"
+- Alternatively, use PowerShell with admin privileges
 
 ## Troubleshooting
 
