@@ -1255,6 +1255,9 @@ if (anticipation_enabled && !is.na(anticipation_periods) && anticipation_periods
   write.csv(combined_summary, summary_csv, row.names = FALSE)
   cat("\nCombined summary table saved to:", summary_csv, "\n")
 
+  baseline_label <- "Standard stacked PPML"
+  shift_label <- paste("Shift", anticipation_periods, "quarters")
+
   comparison_df <- combined_summary %>%
     select(specification, outcome, att_pct, pretrend_p, breakdown_Mbar, honestdid_min_M_zero) %>%
     pivot_wider(
@@ -1265,9 +1268,59 @@ if (anticipation_enabled && !is.na(anticipation_periods) && anticipation_periods
   write.csv(comparison_df, comparison_csv, row.names = FALSE)
   cat("Comparison table saved to:", comparison_csv, "\n\n")
 
+  cat("─────────────────────────────────────────────────────────────\n")
+  cat("CONSOLIDATED SPECIFICATION SUMMARY (INCLUDING HONESTDID)\n")
+  cat("─────────────────────────────────────────────────────────────\n\n")
+  for (i in seq_len(nrow(combined_summary))) {
+    row <- combined_summary[i, ]
+    cat(sprintf("%s - %s\n", row$specification, toupper(row$outcome)))
+    cat(sprintf("  Event window: %s\n", row$event_window))
+    if (!is.na(row$att_pct) && !is.na(row$att_se_pct) && !is.na(row$att_ci_lower) && !is.na(row$att_ci_upper)) {
+      cat(sprintf("  ATT: %.2f%% (SE %.2f%%, 95%% CI [%.2f%%, %.2f%%], periods=%d)\n",
+                  row$att_pct, row$att_se_pct, row$att_ci_lower, row$att_ci_upper, row$att_n_periods))
+    } else {
+      cat("  ATT: Not available\n")
+    }
+
+    if (!is.na(row$pretrend_p) && !is.na(row$pretrend_f)) {
+      cat(sprintf("  Pretrend: F=%.2f, p=%.4f (periods %s)\n", row$pretrend_f, row$pretrend_p, row$pretrend_periods))
+    } else {
+      cat("  Pretrend: Not available\n")
+    }
+
+    if (!is.na(row$honestdid_M0_lb_pct) && !is.na(row$honestdid_M0_ub_pct)) {
+      m0_includes_zero <- (row$honestdid_M0_lb_pct <= 0 & row$honestdid_M0_ub_pct >= 0)
+      cat(sprintf("  HonestDiD M=0 CI: [%.2f%%, %.2f%%] (includes 0: %s)\n",
+                  row$honestdid_M0_lb_pct, row$honestdid_M0_ub_pct,
+                  ifelse(m0_includes_zero, "TRUE", "FALSE")))
+    } else {
+      cat("  HonestDiD M=0 CI: Not available\n")
+    }
+
+    if (!is.na(row$honestdid_min_M_zero)) {
+      cat(sprintf("  HonestDiD minimum M for CI to include 0: %.3f\n", row$honestdid_min_M_zero))
+    } else if (!is.na(row$breakdown_Mbar)) {
+      cat(sprintf("  HonestDiD breakdown Mbar: %.3f\n", row$breakdown_Mbar))
+    } else {
+      cat("  HonestDiD minimum M for CI to include 0: None within tested grid\n")
+    }
+
+    cat("\n")
+  }
+
+  cat("Anticipation-specific HonestDiD check (shift specification only):\n")
+  shift_only <- combined_summary %>% filter(specification == shift_label)
+  for (i in seq_len(nrow(shift_only))) {
+    row <- shift_only[i, ]
+    cat(sprintf("  - %s: M=0 [%.2f%%, %.2f%%], min M for 0 = %s\n",
+                toupper(row$outcome),
+                row$honestdid_M0_lb_pct,
+                row$honestdid_M0_ub_pct,
+                ifelse(is.na(row$honestdid_min_M_zero), "None in tested grid", sprintf("%.3f", row$honestdid_min_M_zero))))
+  }
+  cat("\n")
+
   cat("Simple baseline vs shift interpretation:\n")
-  baseline_label <- "Standard stacked PPML"
-  shift_label <- paste("Shift", anticipation_periods, "quarters")
   for (outcome_name in unique(combined_summary$outcome)) {
     outcome_rows <- combined_summary %>% filter(outcome == outcome_name)
     baseline_row <- outcome_rows %>% filter(specification == baseline_label) %>% slice(1)
