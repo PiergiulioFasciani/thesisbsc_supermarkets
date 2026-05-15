@@ -64,6 +64,77 @@ register_cm_roman_font()
   if (is.null(x)) y else x
 }
 
+analysis_alpha_levels <- function() {
+  levels <- analysis_config$alpha_levels %||% c(0.01, 0.05, 0.10)
+  levels <- suppressWarnings(as.numeric(levels))
+  levels <- levels[is.finite(levels) & levels > 0 & levels < 1]
+  levels <- sort(unique(levels))
+  if (length(levels) == 0) levels <- c(0.01, 0.05, 0.10)
+  levels
+}
+
+significance_stars <- function(p_value, alpha_levels = analysis_alpha_levels()) {
+  if (is.na(p_value)) return("")
+
+  levels <- sort(unique(alpha_levels))
+  levels <- levels[is.finite(levels) & levels > 0 & levels < 1]
+  if (length(levels) == 0) return("")
+
+  star_count <- sum(p_value <= levels)
+  if (star_count <= 0) "" else strrep("*", star_count)
+}
+
+format_numeric <- function(x, digits = 3) {
+  ifelse(is.na(x), "NA", formatC(x, digits = digits, format = "f"))
+}
+
+print_regression_results <- function(model, alpha_levels = analysis_alpha_levels(), ci_level = 0.95, title = "Regression results") {
+  coef_names <- names(coef(model))
+  coef_values <- as.numeric(coef(model))
+  se_values <- as.numeric(se(model))
+  z_values <- ifelse(is.na(coef_values) | is.na(se_values) | se_values == 0, NA_real_, coef_values / se_values)
+  p_values <- ifelse(is.na(z_values), NA_real_, 2 * pnorm(-abs(z_values)))
+  z_crit <- qnorm(1 - (1 - ci_level) / 2)
+
+  results <- data.frame(
+    term = coef_names,
+    estimate = coef_values,
+    std_error = se_values,
+    z_value = z_values,
+    p_value = p_values,
+    stars = vapply(p_values, significance_stars, character(1), alpha_levels = alpha_levels),
+    ci_lower = coef_values - z_crit * se_values,
+    ci_upper = coef_values + z_crit * se_values,
+    stringsAsFactors = FALSE
+  )
+
+  cat(title, "\n", sep = "")
+  if (nrow(results) > 0) {
+    print(
+      results %>%
+        mutate(
+          estimate = format_numeric(.data$estimate),
+          std_error = format_numeric(.data$std_error),
+          z_value = format_numeric(.data$z_value),
+          p_value = ifelse(is.na(.data$p_value), "NA", formatC(.data$p_value, digits = 4, format = "f")),
+          ci_lower = format_numeric(.data$ci_lower),
+          ci_upper = format_numeric(.data$ci_upper)
+        ),
+      row.names = FALSE
+    )
+  } else {
+    cat("  No coefficients available\n")
+  }
+
+  cat("\nModel fit:\n")
+  cat("  Observations:", nobs(model), "\n")
+  cat("  Log-likelihood:", formatC(as.numeric(logLik(model)), digits = 3, format = "f"), "\n")
+  cat("  BIC:", formatC(BIC(model), digits = 3, format = "f"), "\n")
+  cat("  Residual df:", df.residual(model), "\n")
+
+  invisible(results)
+}
+
 sanitize_filename <- function(x) {
   x <- tolower(x)
   x <- gsub("[^a-z0-9]+", "_", x)
@@ -134,6 +205,7 @@ sampler_config <- config$sampler %||% list()
 # analysis and by how many aggregated periods. Defaults: enabled = TRUE, periods = 6
 anticipation_enabled <- if (is.null(analysis_config$anticipation) || is.null(analysis_config$anticipation$enabled)) TRUE else as.logical(analysis_config$anticipation$enabled)
 anticipation_periods <- as.integer(analysis_config$anticipation$periods %||% 6)
+alpha_levels <- analysis_alpha_levels()
 
 time_aggregation <- tolower(analysis_config$time_aggregation %||% "quarterly")
 estimator <- tolower(analysis_config$estimator %||% "manual")
@@ -166,6 +238,7 @@ if (!is.null(max_year)) cat("  Max year:", max_year, "\n")
 cat("  Cluster variable:", cluster_var, "\n")
 cat(sprintf("  Anticipation enabled: %s\n", ifelse(anticipation_enabled, "TRUE", "FALSE")))
 cat(sprintf("  Anticipation periods (in %s): %d\n", time_aggregation, anticipation_periods))
+cat("  Alpha levels:", paste(alpha_levels, collapse = ", "), "\n")
 
 # Print sampler / panel metadata for reproducibility
 cat("\n  CONFIG METADATA (from config.yml):\n")
@@ -439,10 +512,11 @@ run_stacked_ppml_analysis <- function(shift_q, base_output_dir = NULL, base_plot
   }
   
   plots_subfolder <- if (shift_q > 0) "anticipation" else "standard"
-  csv_suffix <- if (shift_q > 0) paste0("_shift", shift_q, "q") else "_baseline"
   run_label <- run_label_for_shift(shift_q)
   dir.create(file.path(plots_dir, plots_subfolder), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(csv_dir, "standard"), recursive = TRUE, showWarnings = FALSE)
+  dir.create(file.path(csv_dir, "anticipation"), recursive = TRUE, showWarnings = FALSE)
+  csv_run_dir <- file.path(csv_dir, plots_subfolder)
 
   cat("Output directory:", output_dir, "\n")
   cat("  Plots:", plots_dir, "\n")
@@ -597,7 +671,7 @@ estimate_stacked_es <- function(stacked_df, ref = -1, method = "ppml", cluster_v
   model
 }
 
-extract_stacked_es_coefs <- function(model, k_min = -12, k_max = 12) {
+extract_stacked_es_coefs <- function(model, k_min = -12, k_max = 12, alpha_levels = analysis_alpha_levels()) {
   coef_data <- coef(model)
   se_data <- se(model)
   time_vars <- names(coef_data)[grepl("rel_time_factor::", names(coef_data)) & grepl(":treated_poi", names(coef_data))]
@@ -605,7 +679,7 @@ extract_stacked_es_coefs <- function(model, k_min = -12, k_max = 12) {
   full_grid <- data.frame(time = k_min:k_max)
   if (length(time_vars) == 0) {
     warning("No interaction coefficients found")
-    return(full_grid %>% mutate(coef = NA_real_, se = NA_real_, pct_effect = NA_real_, ci_lower = NA_real_, ci_upper = NA_real_, is_significant = FALSE))
+    return(full_grid %>% mutate(coef = NA_real_, se = NA_real_, z_value = NA_real_, p_value = NA_real_, stars = "", pct_effect = NA_real_, ci_lower = NA_real_, ci_upper = NA_real_, is_significant = FALSE))
   }
 
   times_estimated <- as.numeric(gsub(".*rel_time_factor::([-]?[0-9]+):.*", "\\1", time_vars))
@@ -616,13 +690,18 @@ extract_stacked_es_coefs <- function(model, k_min = -12, k_max = 12) {
     row.names = NULL
   )
 
+  z_crit <- qnorm(0.975)
+
   coef_df <- full_grid %>% left_join(coef_est, by = "time") %>%
     mutate(
       coef = ifelse(time == -1, 0, coef),
       se = ifelse(time == -1, 0, se),
+      z_value = ifelse(is.na(coef) | is.na(se) | se == 0, NA_real_, coef / se),
+      p_value = ifelse(is.na(z_value), NA_real_, 2 * pnorm(-abs(z_value))),
+      stars = vapply(p_value, significance_stars, character(1), alpha_levels = alpha_levels),
       pct_effect = ifelse(is.na(coef), NA_real_, (exp(coef) - 1) * 100),
-      ci_lower = ifelse(is.na(coef) | is.na(se), NA_real_, (exp(coef - 1.96 * se) - 1) * 100),
-      ci_upper = ifelse(is.na(coef) | is.na(se), NA_real_, (exp(coef + 1.96 * se) - 1) * 100),
+      ci_lower = ifelse(is.na(coef) | is.na(se), NA_real_, (exp(coef - z_crit * se) - 1) * 100),
+      ci_upper = ifelse(is.na(coef) | is.na(se), NA_real_, (exp(coef + z_crit * se) - 1) * 100),
       is_significant = ifelse(is.na(ci_lower) | is.na(ci_upper), FALSE, !(ci_lower <= 0 & ci_upper >= 0))
     )
 
@@ -677,7 +756,8 @@ compute_weighted_post_att <- function(model, stacked_df, start_period = 1, end_p
 
   if (length(interaction_terms) == 0) {
     return(list(
-      att_pct = NA_real_, theta_log = NA_real_, n_periods = 0, periods = integer(), total_treated_weight = 0,
+      att_pct = NA_real_, theta_log = NA_real_, att_z = NA_real_, att_p_value = NA_real_, att_stars = "",
+      n_periods = 0, periods = integer(), total_treated_weight = 0,
       weights = data.frame(), l_vector = NULL, coef_names = character(), att_se_pct = NA_real_,
       att_ci_lower = NA_real_, att_ci_upper = NA_real_, estimand_label = "Support-weighted post-treatment PPML effect"
     ))
@@ -691,7 +771,8 @@ compute_weighted_post_att <- function(model, stacked_df, start_period = 1, end_p
   coef_names_kept <- interaction_terms[keep_idx]
   if (length(times_kept) == 0) {
     return(list(
-      att_pct = NA_real_, theta_log = NA_real_, n_periods = 0, periods = integer(), total_treated_weight = 0,
+      att_pct = NA_real_, theta_log = NA_real_, att_z = NA_real_, att_p_value = NA_real_, att_stars = "",
+      n_periods = 0, periods = integer(), total_treated_weight = 0,
       weights = data.frame(), l_vector = NULL, coef_names = character(), att_se_pct = NA_real_,
       att_ci_lower = NA_real_, att_ci_upper = NA_real_, estimand_label = "Support-weighted post-treatment PPML effect"
     ))
@@ -732,10 +813,15 @@ compute_weighted_post_att <- function(model, stacked_df, start_period = 1, end_p
   att_se_pct <- exp(theta_log) * 100 * beta_se
   att_ci_lower <- (exp(theta_log - 1.96 * beta_se) - 1) * 100
   att_ci_upper <- (exp(theta_log + 1.96 * beta_se) - 1) * 100
+  att_z <- ifelse(is.na(beta_se) | beta_se == 0, NA_real_, theta_log / beta_se)
+  att_p_value <- ifelse(is.na(att_z), NA_real_, 2 * pnorm(-abs(att_z)))
 
   list(
     att_pct = att_pct,
     theta_log = theta_log,
+    att_z = att_z,
+    att_p_value = att_p_value,
+    att_stars = significance_stars(att_p_value),
     n_periods = nrow(weight_df),
     periods = weight_df$time,
     total_treated_weight = sum(weight_df$n_treated_obs),
@@ -783,7 +869,7 @@ plot_stacked_es <- function(coef_df, title, output_path, time_label = "Quarters"
   p
 }
 
-test_pretrends <- function(model, outcome_name, coef_df, pretrend_periods = NULL) {
+test_pretrends <- function(model, outcome_name, coef_df, pretrend_periods = NULL, alpha_levels = analysis_alpha_levels()) {
   cat(sprintf("%s:\n", outcome_name))
   coef_names <- names(coef(model))
   available_pretrend_coefs <- coef_names[grepl("rel_time_factor::", coef_names) & grepl(":treated_poi", coef_names)]
@@ -822,19 +908,21 @@ test_pretrends <- function(model, outcome_name, coef_df, pretrend_periods = NULL
         cat(sprintf("    Max absolute lead estimate: %.3f%%\n", max(abs(lead_df$pct_effect), na.rm = TRUE)))
       }
     }
-    if (p_val > 0.05) {
-      cat("  No statistically significant pre-trend deviations detected (p > 0.05)\n")
-    } else if (p_val > 0.01) {
-      cat("  ⚠ Pre-trend deviations are marginally significant (0.01 < p < 0.05)\n")
+    pretrend_stars <- significance_stars(p_val, alpha_levels)
+    if (pretrend_stars == "") {
+      cat("  No statistically significant pre-trend deviations detected at the configured alpha levels\n")
+    } else if (nchar(pretrend_stars) == 1) {
+      cat(sprintf("  ⚠ Pre-trend deviations are significant at the loosest configured alpha level (%s)\n", pretrend_stars))
     } else {
-      cat("  ✗ Pre-trend deviations are statistically significant (p < 0.01)\n")
+      cat(sprintf("  ✗ Pre-trend deviations are significant at stricter configured alpha levels (%s)\n", pretrend_stars))
     }
     result <- list(
       p_value = p_val,
       f_stat = f_stat,
       periods_tested = length(pre_coefs),
       periods = pretrend_periods,
-      periods_label = paste(pretrend_periods, collapse = ", ")
+      periods_label = paste(pretrend_periods, collapse = ", "),
+      stars = pretrend_stars
     )
   } else {
     result <- list(
@@ -842,7 +930,8 @@ test_pretrends <- function(model, outcome_name, coef_df, pretrend_periods = NULL
       f_stat = NA_real_,
       periods_tested = length(pre_coefs),
       periods = pretrend_periods,
-      periods_label = paste(pretrend_periods, collapse = ", ")
+      periods_label = paste(pretrend_periods, collapse = ", "),
+      stars = ""
     )
   }
 
@@ -1070,16 +1159,14 @@ cat("═════════════════════════
     )
     model <- estimate_stacked_es(stacked_df, ref = -1, method = "ppml", cluster_var = cluster_var)
 
-    if (!consolidated_sink) {
-      cat("Model Summary:\n")
-      print(summary(model))
-      cat("\n")
-    }
+    regression_export <- print_regression_results(model, alpha_levels = alpha_levels, title = "Regression results:")
+    cat("\n")
 
-    coef_df <- extract_stacked_es_coefs(model, k_min = shifted_k_min, k_max = shifted_k_max)
-    csv_path <- file.path(csv_dir, "standard", paste0(out, "_coefficients", csv_suffix, ".csv"))
-    write.csv(coef_df, csv_path, row.names = FALSE)
-    if (!consolidated_sink) cat("Coefficients saved to:", csv_path, "\n\n")
+    coef_df <- extract_stacked_es_coefs(model, k_min = shifted_k_min, k_max = shifted_k_max, alpha_levels = alpha_levels)
+
+    csv_path <- file.path(csv_run_dir, paste0(sanitize_filename(out), "_regression_", run_label, ".csv"))
+    write.csv(regression_export, csv_path, row.names = FALSE)
+    if (!consolidated_sink) cat("Regression table saved to:", csv_path, "\n\n")
 
     if (!consolidated_sink) cat("PRETREND TEST:\n")
     pretrend_result <- test_pretrends(model, toupper(out), coef_df)
@@ -1095,16 +1182,13 @@ cat("═════════════════════════
 
     honest_post_max <- shifted_k_max
   att_result <- compute_weighted_post_att(model, stacked_df, start_period = 1, end_period = honest_post_max)
-  cat(sprintf("%s (periods 1 to %d): ", att_result$estimand_label, honest_post_max))
+    cat(sprintf("%s%s (periods 1 to %d): ", att_result$estimand_label, ifelse(!is.null(att_result$att_stars) && att_result$att_stars != "", paste0(" ", att_result$att_stars), ""), honest_post_max))
   if (!is.na(att_result$att_pct)) {
     cat(sprintf("%.2f%% (SE: %.2f%%, 95%% CI: [%.2f%%, %.2f%%])\n", att_result$att_pct, att_result$att_se_pct, att_result$att_ci_lower, att_result$att_ci_upper))
   } else {
     cat("not available\n")
   }
   cat(sprintf("  (identified over %d post-treatment event-times; total treated obs weight = %d)\n\n", att_result$n_periods, att_result$total_treated_weight))
-
-  event_time_att_df <- aggregate_event_time_att(coef_df, stacked_df, k_min = shifted_k_min, k_max = shifted_k_max)
-  write.csv(event_time_att_df, file.path(csv_dir, "standard", paste0(out, "_event_time_support_weighted", csv_suffix, ".csv")), row.names = FALSE)
 
   cat("HONESTDID SENSITIVITY ANALYSIS:\n")
   if (consolidated_sink) sink()
@@ -1116,6 +1200,14 @@ cat("═════════════════════════
     shift_q = shift_q
   )
   if (consolidated_sink) sink(results_file, append = TRUE)
+
+  if (!is.null(honestdid_result$results) && nrow(honestdid_result$results) > 0) {
+    cat("HONESTDID FULL RESULTS TABLE:\n")
+    print(honestdid_result$results, row.names = FALSE)
+    cat("\n")
+  } else {
+    cat("HONESTDID FULL RESULTS TABLE: Not available\n\n")
+  }
 
   standard_results[[out]] <- list(
     model = model,
@@ -1130,12 +1222,14 @@ cat("═════════════════════════
     event_window = window_label,
     outcome = out,
     att_pct = att_result$att_pct,
+    att_stars = att_result$att_stars,
     att_n_periods = att_result$n_periods,
     att_se_pct = att_result$att_se_pct,
     att_ci_lower = att_result$att_ci_lower,
     att_ci_upper = att_result$att_ci_upper,
     pretrend_f = pretrend_result$f_stat,
     pretrend_p = pretrend_result$p_value,
+    pretrend_stars = pretrend_result$stars,
     pretrend_periods = pretrend_result$periods_label,
     honestdid_M0_lb_pct = if (!is.null(honestdid_result$results) && nrow(honestdid_result$results) > 0) honestdid_result$results$lb_pct[1] else NA_real_,
     honestdid_M0_ub_pct = if (!is.null(honestdid_result$results) && nrow(honestdid_result$results) > 0) honestdid_result$results$ub_pct[1] else NA_real_,
@@ -1155,10 +1249,6 @@ cat("═════════════════════════
     print(summary_table, row.names = FALSE)
     cat("\n")
 
-    summary_csv <- file.path(csv_dir, "complete_summary.csv")
-    write.csv(summary_table, summary_csv, row.names = FALSE)
-    cat("Summary table saved to:", summary_csv, "\n\n")
-
     cat("═══════════════════════════════════════════════════════════════\n")
     cat("  KEY FINDINGS AND INTERPRETATION\n")
     cat("═══════════════════════════════════════════════════════════════\n\n")
@@ -1169,10 +1259,9 @@ cat("═════════════════════════
       cat(sprintf("─────────────────────────────────────────────────────────────\n"))
       cat(sprintf("%s - %s:\n", row$specification, toupper(row$outcome)))
       cat(sprintf("  Event window: %s\n", row$event_window))
-      cat(sprintf("  ATT: %.2f%% (over %d periods)\n", row$att_pct, row$att_n_periods))
+      cat(sprintf("  ATT%s: %.2f%% (over %d periods)\n", ifelse(!is.null(row$att_stars) && row$att_stars != "", paste0(" ", row$att_stars), ""), row$att_pct, row$att_n_periods))
       if (!is.na(row$pretrend_p)) {
-        pretrend_symbol <- ifelse(row$pretrend_p > 0.05, "✓", ifelse(row$pretrend_p > 0.01, "⚠", "✗"))
-        cat(sprintf("  Pretrend test %s: F=%.2f, p=%.4f (periods %s)\n", pretrend_symbol, row$pretrend_f, row$pretrend_p, row$pretrend_periods))
+        cat(sprintf("  Pretrend%s: F=%.2f, p=%.4f (periods %s)\n", ifelse(!is.null(row$pretrend_stars) && row$pretrend_stars != "", paste0(" ", row$pretrend_stars), ""), row$pretrend_f, row$pretrend_p, row$pretrend_periods))
       } else {
         cat("  Pretrend test: Not available\n")
       }
@@ -1192,7 +1281,7 @@ cat("═════════════════════════
         cat("  HonestDiD: Not available\n")
       }
 
-      pretrend_pass <- !is.na(row$pretrend_p) && row$pretrend_p > 0.05
+      pretrend_pass <- !is.na(row$pretrend_p) && row$pretrend_stars == ""
       m0_pass <- !is.na(row$honestdid_M0_lb_pct) && !is.na(row$honestdid_M0_ub_pct) && !(row$honestdid_M0_lb_pct <= 0 & row$honestdid_M0_ub_pct >= 0)
 
       if (pretrend_pass && m0_pass) {
@@ -1218,10 +1307,9 @@ cat("═════════════════════════
     cat("Stacked PPML event-study analysis complete.\n")
     cat("Output directory:", output_dir, "\n")
     cat("  - Results text:", results_file, "\n")
-    cat("  - Summary table:", summary_csv, "\n")
     cat("  - Event-study plots:", file.path(plots_dir, "standard"), "\n")
     cat("  - HonestDiD plots:", file.path(plots_dir, "standard"), "\n")
-    cat("  - CSV exports:", csv_dir, "\n")
+    cat("  - CSV exports:", csv_dir, "(standard/ and anticipation/)\n")
   } else {
     return(invisible(list(summary_rows = summary_rows)))
   }
@@ -1251,23 +1339,9 @@ if (anticipation_enabled && !is.na(anticipation_periods) && anticipation_periods
   )
   
   combined_summary <- bind_rows(baseline_run$summary_rows, shift_run$summary_rows)
-  summary_csv <- file.path(baseline_run$csv_dir, "complete_summary.csv")
-  write.csv(combined_summary, summary_csv, row.names = FALSE)
-  cat("\nCombined summary table saved to:", summary_csv, "\n")
 
   baseline_label <- "Standard stacked PPML"
   shift_label <- paste("Shift", anticipation_periods, "quarters")
-
-  comparison_df <- combined_summary %>%
-    select(specification, outcome, att_pct, pretrend_p, breakdown_Mbar, honestdid_min_M_zero) %>%
-    pivot_wider(
-      names_from = specification,
-      values_from = c(att_pct, pretrend_p, breakdown_Mbar, honestdid_min_M_zero)
-    )
-  comparison_csv <- file.path(baseline_run$csv_dir, "anticipation_shift_comparison.csv")
-  write.csv(comparison_df, comparison_csv, row.names = FALSE)
-  cat("Comparison table saved to:", comparison_csv, "\n\n")
-
   cat("─────────────────────────────────────────────────────────────\n")
   cat("CONSOLIDATED SPECIFICATION SUMMARY (INCLUDING HONESTDID)\n")
   cat("─────────────────────────────────────────────────────────────\n\n")
@@ -1276,14 +1350,17 @@ if (anticipation_enabled && !is.na(anticipation_periods) && anticipation_periods
     cat(sprintf("%s - %s\n", row$specification, toupper(row$outcome)))
     cat(sprintf("  Event window: %s\n", row$event_window))
     if (!is.na(row$att_pct) && !is.na(row$att_se_pct) && !is.na(row$att_ci_lower) && !is.na(row$att_ci_upper)) {
-      cat(sprintf("  ATT: %.2f%% (SE %.2f%%, 95%% CI [%.2f%%, %.2f%%], periods=%d)\n",
+      cat(sprintf("  ATT%s: %.2f%% (SE %.2f%%, 95%% CI [%.2f%%, %.2f%%], periods=%d)\n",
+                  ifelse(!is.null(row$att_stars) && row$att_stars != "", paste0(" ", row$att_stars), ""),
                   row$att_pct, row$att_se_pct, row$att_ci_lower, row$att_ci_upper, row$att_n_periods))
     } else {
       cat("  ATT: Not available\n")
     }
 
     if (!is.na(row$pretrend_p) && !is.na(row$pretrend_f)) {
-      cat(sprintf("  Pretrend: F=%.2f, p=%.4f (periods %s)\n", row$pretrend_f, row$pretrend_p, row$pretrend_periods))
+      cat(sprintf("  Pretrend%s: F=%.2f, p=%.4f (periods %s)\n",
+                  ifelse(!is.null(row$pretrend_stars) && row$pretrend_stars != "", paste0(" ", row$pretrend_stars), ""),
+                  row$pretrend_f, row$pretrend_p, row$pretrend_periods))
     } else {
       cat("  Pretrend: Not available\n")
     }
@@ -1342,10 +1419,9 @@ if (anticipation_enabled && !is.na(anticipation_periods) && anticipation_periods
   cat("─────────────────────────────────────────────────────────────\n\n")
   cat("Output location:", baseline_run$output_dir, "\n")
   cat("  - Consolidated results:", baseline_run$results_file, "\n")
-  cat("  - Summary table:", summary_csv, "\n")
   cat("  - Standard (baseline) graphs:", file.path(baseline_run$plots_dir, "standard"), "\n")
   cat("  - Anticipation shift graphs:", file.path(baseline_run$plots_dir, "anticipation"), "\n")
-  cat("  - CSV exports:", baseline_run$csv_dir, "\n")
+  cat("  - CSV exports:", baseline_run$csv_dir, "(standard/ and anticipation/)\n")
 } else {
   shift_run <- NULL
 }
